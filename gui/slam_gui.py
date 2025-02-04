@@ -249,7 +249,7 @@ class SLAM_GUI:
         self.g_renderer.update_camera_intrin(self.g_camera)
         self.g_renderer.set_render_reso(self.g_camera.w, self.g_camera.h)
 
-    def add_camera(self, camera, name, H=None, W=None, fx=None, fy=None, cx=None, cy=None, color=[0, 1, 0], gt=False, size=0.01):
+    def add_camera(self, camera, name, H=None, W=None, fx=None, fy=None, cx=None, cy=None, color=[0, 1, 0], gt=False, size=1.0):
         W2C = (
             getWorld2View2(camera.R_gt, camera.T_gt)
             if gt

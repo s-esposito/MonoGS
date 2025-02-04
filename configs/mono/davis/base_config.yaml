@@ -40,7 +40,7 @@ Training:
   kf_overlap: 0.9
   kf_cutoff: 0.3
   prune_mode: 'slam'
-  single_thread: False
+  single_thread: True
   spherical_harmonics: False
 
   lr:

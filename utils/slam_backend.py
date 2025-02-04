@@ -58,11 +58,12 @@ class BackEnd(mp.Process):
         self.gaussian_reset = self.config["Training"]["gaussian_reset"]
         self.size_threshold = self.config["Training"]["size_threshold"]
         self.window_size = self.config["Training"]["window_size"]
-        self.single_thread = (
-            self.config["Dataset"]["single_thread"]
-            if "single_thread" in self.config["Dataset"]
-            else False
-        )
+        self.single_thread = True
+        # (
+        #     self.config["Dataset"]["single_thread"]
+        #     if "single_thread" in self.config["Dataset"]
+        #     else False
+        # )
 
     def add_next_kf(self, frame_idx, viewpoint, init=False, scale=2.0, depth_map=None):
         #
@@ -430,7 +431,7 @@ class BackEnd(mp.Process):
 
                     opt_params = []
                     frames_to_optimize = self.config["Training"]["pose_window"]
-                    iter_per_kf = self.mapping_itr_num if self.single_thread else 10
+                    iter_per_kf = self.mapping_itr_num  # if self.single_thread else 10
                     if not self.initialized:
                         if (
                             len(self.current_window)

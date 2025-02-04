@@ -31,7 +31,7 @@ class Frustum:
         cameraeye = cameraeye[0:3, :].transpose()
         eye = cameraeye[0, :]
 
-        base_behind = np.array([[0.0, -2.5, -30.0]]) * self.size
+        base_behind = np.array([[0.0, 0.0, -1.0]]) * self.size
         base_behind_hmg = np.hstack([base_behind, np.ones((base_behind.shape[0], 1))])
         cameraeye_behind = pose @ base_behind_hmg.transpose()
         cameraeye_behind = cameraeye_behind[0:3, :].transpose()
@@ -54,7 +54,7 @@ def create_frustum(
     fx=None, fy=None,
     cx=None, cy=None,
     color=[0, 1, 0],
-    size=0.02
+    size=1.0,
 ):
     # points = (
     #     np.array(
@@ -80,13 +80,12 @@ def create_frustum(
     )
     
     u, v = points_2d[:, 0], points_2d[:, 1]
-    Z = np.ones_like(u)
+    Z = np.ones_like(u) * max(fx, fy) * 1e-3
 
     X = (u - cx) * Z / fx
     Y = (v - cy) * Z / fy
     
     points = np.stack([X, Y, Z], axis=1)
-    print("camera_space_points", points)
     
     # add [0, 0, 0] to the points
     points = np.vstack([np.array([0, 0, 0]), points])

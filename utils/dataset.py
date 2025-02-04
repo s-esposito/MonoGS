@@ -30,14 +30,17 @@ class DavisParser:
     def load_poses(self, datapath, frame_rate=-1):
         
         self.color_paths, self.poses, self.depth_paths, self.frames = [], [], [], []
+        self.segmentation_paths = []
 
         # list all files in datapath/rgb
         self.color_paths = sorted(glob.glob(f"{datapath}/rgb/*.jpg"))
         # sort
         self.color_paths.sort(key=lambda f: int(''.join(filter(str.isdigit, f))))
-        # 
-        print(self.color_paths)
         
+        # list all files in datapath/segmentation
+        self.segmentation_paths = sorted(glob.glob(f"{datapath}/segmentation/*.png"))
+        # sort
+        self.segmentation_paths.sort(key=lambda f: int(''.join(filter(str.isdigit, f))))
         
         # for ix in indicies:
         #     (i, j, k) = associations[ix]
@@ -286,8 +289,17 @@ class MonocularDataset(BaseDataset):
             (self.width, self.height),
             cv2.CV_32FC1,
         )
+        # rgb
+        self.color_paths = []
+        # segmentation masks
+        self.has_segmentation = False
+        self.segmentation_paths = []
+        # gt poses
+        self.has_traj = True
+        self.poses = []
         # depth parameters
         self.has_depth = True if "depth_scale" in calibration.keys() else False
+        self.depth_paths = []
         self.depth_scale = calibration["depth_scale"] if self.has_depth else None
 
         # Default scene scale
@@ -316,6 +328,10 @@ class MonocularDataset(BaseDataset):
         if self.has_depth:
             depth_path = self.depth_paths[idx]
             depth = np.array(Image.open(depth_path)) / self.depth_scale
+            
+        if self.has_segmentation:
+            segmentation_path = self.segmentation_paths[idx]
+            segmentation = np.array(Image.open(segmentation_path))
 
         image = (
             torch.from_numpy(image / 255.0)
@@ -453,13 +469,16 @@ class DavisDataset(MonocularDataset):
         self.num_imgs = parser.n_img
         self.color_paths = parser.color_paths
         self.depth_paths = parser.depth_paths
+        self.segmentation_paths = parser.segmentation_paths
         self.poses = parser.poses
         #
+        self.has_segmentation = True
         self.has_depth = False
         self.has_traj = False
         #
         print(f"Color paths lenght: {len(self.color_paths)}")
         print(f"Depth paths lenght: {len(self.depth_paths)}")
+        print(f"Segmentation paths lenght: {len(self.segmentation_paths)}")
         print(f"Poses lenght: {len(self.poses)}")
 
 
