@@ -7,6 +7,9 @@ import numpy as np
 import torch
 import trimesh
 from PIL import Image
+import itertools
+from io import StringIO
+
 
 from gaussian_splatting.utils.graphics_utils import focal2fov
 
@@ -52,7 +55,8 @@ class TUMParser:
         self.n_img = len(self.color_paths)
 
     def parse_list(self, filepath, skiprows=0):
-        data = np.loadtxt(filepath, delimiter=" ", dtype=np.unicode_, skiprows=skiprows)
+        # data = np.loadtxt(filepath, delimiter=" ", dtype=str, skiprows=skiprows)
+        data = np.genfromtxt(filepath, delimiter=" ", dtype=str, skip_header=skiprows, filling_values="")
         return data
 
     def associate_frames(self, tstamp_image, tstamp_depth, tstamp_pose, max_dt=0.08):

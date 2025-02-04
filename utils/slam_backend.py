@@ -384,14 +384,18 @@ class BackEnd(mp.Process):
             else:
                 data = self.backend_queue.get()
                 if data[0] == "stop":
+                    Log("Stopping the backend")
                     break
                 elif data[0] == "pause":
                     self.pause = True
+                    Log("Paused the backend")
                 elif data[0] == "unpause":
                     self.pause = False
+                    Log("Unpaused the backend")
                 elif data[0] == "color_refinement":
                     self.color_refinement()
                     self.push_to_frontend()
+                    Log("Color refinement done")
                 elif data[0] == "init":
                     cur_frame_idx = data[1]
                     viewpoint = data[2]
@@ -405,6 +409,7 @@ class BackEnd(mp.Process):
                     )
                     self.initialize_map(cur_frame_idx, viewpoint)
                     self.push_to_frontend("init")
+                    Log("Initialization done")
 
                 elif data[0] == "keyframe":
                     cur_frame_idx = data[1]
