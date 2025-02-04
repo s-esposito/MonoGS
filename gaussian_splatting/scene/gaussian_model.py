@@ -17,7 +17,7 @@ import torch
 from plyfile import PlyData, PlyElement
 from simple_knn._C import distCUDA2
 from torch import nn
-
+from utils.logging_utils import Log
 from gaussian_splatting.utils.general_utils import (
     build_rotation,
     build_scaling_rotation,
@@ -105,6 +105,8 @@ class GaussianModel:
             self.active_sh_degree += 1
 
     def create_pcd_from_image(self, cam_info, init=False, scale=2.0, depthmap=None):
+        #
+        Log("Creating PCD from image")
         cam = cam_info
         image_ab = (torch.exp(cam.exposure_a)) * cam.original_image + cam.exposure_b
         image_ab = torch.clamp(image_ab, 0.0, 1.0)
@@ -131,14 +133,24 @@ class GaussianModel:
         return self.create_pcd_from_image_and_depth(cam, rgb, depth, init)
 
     def create_pcd_from_image_and_depth(self, cam, rgb, depth, init=False):
+        #
+        Log("Creating PCD from image and depth")
         if init:
+            # Downsample factor for initialization
             downsample_factor = self.config["Dataset"]["pcd_downsample_init"]
         else:
             downsample_factor = self.config["Dataset"]["pcd_downsample"]
+        print("downsample_factor", downsample_factor)
+
         point_size = self.config["Dataset"]["point_size"]
+
         if "adaptive_pointsize" in self.config["Dataset"]:
+            print("using adaptive point size")
             if self.config["Dataset"]["adaptive_pointsize"]:
                 point_size = min(0.05, point_size * np.median(depth))
+
+        print("point_size", point_size)
+
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
             rgb,
             depth,
@@ -146,8 +158,11 @@ class GaussianModel:
             depth_trunc=100.0,
             convert_rgb_to_intensity=False,
         )
+        print("RGBD image created")
 
         W2C = getWorld2View2(cam.R, cam.T).cpu().numpy()
+        print("w2c", W2C)
+
         pcd_tmp = o3d.geometry.PointCloud.create_from_rgbd_image(
             rgbd,
             o3d.camera.PinholeCameraIntrinsic(
@@ -161,15 +176,22 @@ class GaussianModel:
             extrinsic=W2C,
             project_valid_depth_only=True,
         )
+        print("Point cloud created")
         pcd_tmp = pcd_tmp.random_down_sample(1.0 / downsample_factor)
+        print("Point cloud downsampled")
+
         new_xyz = np.asarray(pcd_tmp.points)
         new_rgb = np.asarray(pcd_tmp.colors)
+        print("new_xyz.shape", new_xyz.shape)
+        print("new_rgb.shape", new_rgb.shape)
 
         pcd = BasicPointCloud(
             points=new_xyz, colors=new_rgb, normals=np.zeros((new_xyz.shape[0], 3))
         )
         self.ply_input = pcd
 
+        #
+        Log("Init. features")
         fused_point_cloud = torch.from_numpy(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.from_numpy(np.asarray(pcd.colors)).float().cuda())
         features = (
@@ -180,6 +202,8 @@ class GaussianModel:
         features[:, :3, 0] = fused_color
         features[:, 3:, 1:] = 0.0
 
+        #
+        Log("Init. scales")
         dist2 = (
             torch.clamp_min(
                 distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),
@@ -191,6 +215,8 @@ class GaussianModel:
         if not self.isotropic:
             scales = scales.repeat(1, 3)
 
+        #
+        Log("Init. rotations")
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
         opacities = inverse_sigmoid(
@@ -208,6 +234,14 @@ class GaussianModel:
     def extend_from_pcd(
         self, fused_point_cloud, features, scales, rots, opacities, kf_id
     ):
+        #
+        Log("Extending PCD")
+        print("fused_point_cloud.shape", fused_point_cloud.shape)
+        print("features.shape", features.shape)
+        print("scales.shape", scales.shape)
+        print("rots.shape", rots.shape)
+        print("opacities.shape", opacities.shape)
+
         new_xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         new_features_dc = nn.Parameter(
             features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True)

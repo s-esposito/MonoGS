@@ -51,21 +51,25 @@ def evaluate_evo(poses_gt, poses_est, plot_dir, label, monocular=False):
     ax = evo.tools.plot.prepare_axis(fig, plot_mode)
     ax.set_title(f"ATE RMSE: {ape_stat}")
     evo.tools.plot.traj(ax, plot_mode, traj_ref, "--", "gray", "gt")
-    evo.tools.plot.traj_colormap(
-        ax,
-        traj_est_aligned,
-        ape_metric.error,
-        plot_mode,
-        min_map=ape_stats["min"],
-        max_map=ape_stats["max"],
-    )
+    # evo.tools.plot.traj_colormap(
+    #     ax,
+    #     traj_est_aligned,
+    #     ape_metric.error,
+    #     plot_mode,
+    #     min_map=ape_stats["min"],
+    #     max_map=ape_stats["max"],
+    # )
     ax.legend()
     plt.savefig(os.path.join(plot_dir, "evo_2dplot_{}.png".format(str(label))), dpi=90)
-
+    plt.close()
+    
     return ape_stat
 
 
 def eval_ate(frames, kf_ids, save_dir, iterations, final=False, monocular=False):
+    #
+    Log("Evaluating ATE")
+    #
     trj_data = dict()
     latest_frame_idx = kf_ids[-1] + 2 if final else kf_ids[-1] + 1
     trj_id, trj_est, trj_gt = [], [], []
@@ -123,6 +127,9 @@ def eval_rendering(
     kf_indices,
     iteration="final",
 ):
+    #
+    Log("Evaluating Rendering")
+    #
     interval = 5
     img_pred, img_gt, saved_frame_idx = [], [], []
     end_idx = len(frames) - 1 if iteration == "final" or "before_opt" else iteration
@@ -181,6 +188,9 @@ def eval_rendering(
 
 
 def save_gaussians(gaussians, name, iteration, final=False):
+    # 
+    Log("Saving Gaussians")
+    #
     if name is None:
         return
     if final:

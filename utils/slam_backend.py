@@ -65,11 +65,15 @@ class BackEnd(mp.Process):
         )
 
     def add_next_kf(self, frame_idx, viewpoint, init=False, scale=2.0, depth_map=None):
+        #
+        Log(f"Adding next keyframe {frame_idx}, init: {init}, scale: {scale}")
         self.gaussians.extend_from_pcd_seq(
             viewpoint, kf_id=frame_idx, init=init, scale=scale, depthmap=depth_map
         )
 
     def reset(self):
+        #
+        Log("Resetting the backend")
         self.iteration_count = 0
         self.occ_aware_visibility = {}
         self.viewpoints = {}
@@ -78,13 +82,17 @@ class BackEnd(mp.Process):
         self.keyframe_optimizers = None
 
         # remove all gaussians
+        Log("Removing all gaussians")
         self.gaussians.prune_points(self.gaussians.unique_kfIDs >= 0)
         # remove everything from the queues
+        Log("Clearing the queues")
         while not self.backend_queue.empty():
             self.backend_queue.get()
 
     def initialize_map(self, cur_frame_idx, viewpoint):
-        for mapping_iteration in range(self.init_itr_num):
+        #
+        Log("Initializing the map")
+        for mapping_iteration in tqdm(range(self.init_itr_num)):
             self.iteration_count += 1
             render_pkg = render(
                 viewpoint, self.gaussians, self.pipeline_params, self.background
@@ -400,7 +408,6 @@ class BackEnd(mp.Process):
                     cur_frame_idx = data[1]
                     viewpoint = data[2]
                     depth_map = data[3]
-                    Log("Resetting the system")
                     self.reset()
 
                     self.viewpoints[cur_frame_idx] = viewpoint

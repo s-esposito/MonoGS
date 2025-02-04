@@ -11,7 +11,6 @@ class Camera(nn.Module):
         uid,
         color,
         depth,
-        gt_T,
         projection_matrix,
         fx,
         fy,
@@ -21,6 +20,7 @@ class Camera(nn.Module):
         fovy,
         image_height,
         image_width,
+        gt_T=None,
         device="cuda:0",
     ):
         super(Camera, self).__init__()
@@ -30,6 +30,11 @@ class Camera(nn.Module):
         T = torch.eye(4, device=device)
         self.R = T[:3, :3]
         self.T = T[:3, 3]
+        
+        # TODO: handle the case where gt_T is None differently
+        if gt_T is None:
+            gt_T = torch.eye(4, device=device)
+            
         self.R_gt = gt_T[:3, :3]
         self.T_gt = gt_T[:3, 3]
 
@@ -69,7 +74,6 @@ class Camera(nn.Module):
             idx,
             gt_color,
             gt_depth,
-            gt_pose,
             projection_matrix,
             dataset.fx,
             dataset.fy,
@@ -79,6 +83,7 @@ class Camera(nn.Module):
             dataset.fovy,
             dataset.height,
             dataset.width,
+            gt_T=gt_pose,
             device=dataset.device,
         )
 
@@ -88,7 +93,19 @@ class Camera(nn.Module):
             znear=0.01, zfar=100.0, fx=fx, fy=fy, cx=cx, cy=cy, W=W, H=H
         ).transpose(0, 1)
         return Camera(
-            uid, None, None, T, projection_matrix, fx, fy, cx, cy, FoVx, FoVy, H, W
+            uid,
+            color=None,
+            depth=None,
+            projection_matrix=projection_matrix,
+            fx=fx,
+            fy=fy,
+            cx=cx,
+            cy=cy,
+            fovx=FoVx,
+            fovy=FoVy,
+            image_height=H,
+            image_width=W,
+            gt_T=T,
         )
 
     @property

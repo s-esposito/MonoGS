@@ -119,8 +119,11 @@ class SLAM:
         Log("Total FPS", N_frames / (start.elapsed_time(end) * 0.001), tag="Eval")
 
         if self.eval_rendering:
+            #
             self.gaussians = self.frontend.gaussians
             kf_indices = self.frontend.kf_indices
+
+            #
             ATE = eval_ate(
                 self.frontend.cameras,
                 self.frontend.kf_indices,
@@ -130,6 +133,7 @@ class SLAM:
                 monocular=self.monocular,
             )
 
+            #
             rendering_result = eval_rendering(
                 self.frontend.cameras,
                 self.gaussians,
@@ -194,11 +198,14 @@ class SLAM:
             gui_process.join()
             Log("GUI Stopped and joined the main thread")
 
-    def run(self):
-        pass
+    # def run(self):
+    #     pass
 
 
 if __name__ == "__main__":
+    
+    # 
+    
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
     parser.add_argument("--config", type=str)
@@ -208,6 +215,7 @@ if __name__ == "__main__":
 
     mp.set_start_method("spawn")
 
+    print("Loading config from", args.config)
     with open(args.config, "r") as yml:
         config = yaml.safe_load(yml)
 
@@ -251,7 +259,7 @@ if __name__ == "__main__":
 
     slam = SLAM(config, save_dir=save_dir)
 
-    slam.run()
+    # slam.run()
     wandb.finish()
 
     # All done

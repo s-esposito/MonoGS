@@ -19,6 +19,46 @@ except Exception:
     pass
 
 
+class DavisParser:
+    def __init__(self, input_folder):
+        self.input_folder = input_folder
+        self.load_poses(self.input_folder, frame_rate=24)
+        self.n_img = len(self.color_paths)
+        
+        # this dataset has no ground truth trajectory info
+    
+    def load_poses(self, datapath, frame_rate=-1):
+        
+        self.color_paths, self.poses, self.depth_paths, self.frames = [], [], [], []
+
+        # list all files in datapath/rgb
+        self.color_paths = sorted(glob.glob(f"{datapath}/rgb/*.jpg"))
+        # sort
+        self.color_paths.sort(key=lambda f: int(''.join(filter(str.isdigit, f))))
+        # 
+        print(self.color_paths)
+        
+        
+        # for ix in indicies:
+        #     (i, j, k) = associations[ix]
+        #     self.color_paths += [os.path.join(datapath, image_data[i, 1])]
+        #     self.depth_paths += [os.path.join(datapath, depth_data[j, 1])]
+
+        #     quat = pose_vecs[k][4:]
+        #     trans = pose_vecs[k][1:4]
+        #     T = trimesh.transformations.quaternion_matrix(np.roll(quat, 1))
+        #     T[:3, 3] = trans
+        #     self.poses += [np.linalg.inv(T)]
+
+        #     frame = {
+        #         "file_path": str(os.path.join(datapath, image_data[i, 1])),
+        #         "depth_path": str(os.path.join(datapath, depth_data[j, 1])),
+        #         "transform_matrix": (np.linalg.inv(T)).tolist(),
+        #     }
+
+        #     self.frames.append(frame)
+        
+
 class ReplicaParser:
     def __init__(self, input_folder):
         self.input_folder = input_folder
@@ -56,7 +96,9 @@ class TUMParser:
 
     def parse_list(self, filepath, skiprows=0):
         # data = np.loadtxt(filepath, delimiter=" ", dtype=str, skiprows=skiprows)
-        data = np.genfromtxt(filepath, delimiter=" ", dtype=str, skip_header=skiprows, filling_values="")
+        data = np.genfromtxt(
+            filepath, delimiter=" ", dtype=str, skip_header=skiprows, filling_values=""
+        )
         return data
 
     def associate_frames(self, tstamp_image, tstamp_depth, tstamp_pose, max_dt=0.08):
@@ -177,8 +219,7 @@ class EuRoCParser:
             trans = data[pose_indices[i], 1:4]
             quat = data[pose_indices[i], 4:8]
             quat = quat[[1, 2, 3, 0]]
-            
-            
+
             T_w_i = trimesh.transformations.quaternion_matrix(np.roll(quat, 1))
             T_w_i[:3, 3] = trans
             T_w_c = np.dot(T_w_i, T_i_c0)
@@ -260,7 +301,11 @@ class MonocularDataset(BaseDataset):
 
     def __getitem__(self, idx):
         color_path = self.color_paths[idx]
-        pose = self.poses[idx]
+        
+        if len(self.poses) == 0:
+            pose = None
+        else:
+            pose = self.poses[idx]
 
         image = np.array(Image.open(color_path))
         depth = None
@@ -278,7 +323,10 @@ class MonocularDataset(BaseDataset):
             .permute(2, 0, 1)
             .to(device=self.device, dtype=self.dtype)
         )
-        pose = torch.from_numpy(pose).to(device=self.device)
+        
+        if pose is not None:
+            pose = torch.from_numpy(pose).to(device=self.device)
+        
         return image, depth, pose
 
 
@@ -397,6 +445,24 @@ class StereoDataset(BaseDataset):
         return image, depth, pose
 
 
+class DavisDataset(MonocularDataset):
+    def __init__(self, args, path, config):
+        super().__init__(args, path, config)
+        dataset_path = config["Dataset"]["dataset_path"]
+        parser = DavisParser(dataset_path)
+        self.num_imgs = parser.n_img
+        self.color_paths = parser.color_paths
+        self.depth_paths = parser.depth_paths
+        self.poses = parser.poses
+        #
+        self.has_depth = False
+        self.has_traj = False
+        #
+        print(f"Color paths lenght: {len(self.color_paths)}")
+        print(f"Depth paths lenght: {len(self.depth_paths)}")
+        print(f"Poses lenght: {len(self.poses)}")
+
+
 class TUMDataset(MonocularDataset):
     def __init__(self, args, path, config):
         super().__init__(args, path, config)
@@ -406,6 +472,9 @@ class TUMDataset(MonocularDataset):
         self.color_paths = parser.color_paths
         self.depth_paths = parser.depth_paths
         self.poses = parser.poses
+        print(f"Color paths lenght: {len(self.color_paths)}")
+        print(f"Depth paths lenght: {len(self.depth_paths)}")
+        print(f"Poses lenght: {len(self.poses)}")
 
 
 class ReplicaDataset(MonocularDataset):
@@ -435,15 +504,17 @@ class RealsenseDataset(BaseDataset):
         super().__init__(args, path, config)
         self.pipeline = rs.pipeline()
         self.h, self.w = 720, 1280
-        
+
         self.depth_scale = 0
         if self.config["Dataset"]["sensor_type"] == "depth":
-            self.has_depth = True 
-        else: 
+            self.has_depth = True
+        else:
             self.has_depth = False
 
         self.rs_config = rs.config()
-        self.rs_config.enable_stream(rs.stream.color, self.w, self.h, rs.format.bgr8, 30)
+        self.rs_config.enable_stream(
+            rs.stream.color, self.w, self.h, rs.format.bgr8, 30
+        )
         if self.has_depth:
             self.rs_config.enable_stream(rs.stream.depth)
 
@@ -462,7 +533,7 @@ class RealsenseDataset(BaseDataset):
             self.profile.get_stream(rs.stream.color)
         )
         self.rgb_intrinsics = self.rgb_profile.get_intrinsics()
-        
+
         self.fx = self.rgb_intrinsics.fx
         self.fy = self.rgb_intrinsics.fy
         self.cx = self.rgb_intrinsics.ppx
@@ -483,14 +554,11 @@ class RealsenseDataset(BaseDataset):
 
         if self.has_depth:
             self.depth_sensor = self.profile.get_device().first_depth_sensor()
-            self.depth_scale  = self.depth_sensor.get_depth_scale()
+            self.depth_scale = self.depth_sensor.get_depth_scale()
             self.depth_profile = rs.video_stream_profile(
                 self.profile.get_stream(rs.stream.depth)
             )
             self.depth_intrinsics = self.depth_profile.get_intrinsics()
-        
-        
-
 
     def __getitem__(self, idx):
         pose = torch.eye(4, device=self.device, dtype=self.dtype)
@@ -502,7 +570,7 @@ class RealsenseDataset(BaseDataset):
             aligned_frames = self.align.process(frameset)
             rgb_frame = aligned_frames.get_color_frame()
             aligned_depth_frame = aligned_frames.get_depth_frame()
-            depth = np.array(aligned_depth_frame.get_data())*self.depth_scale
+            depth = np.array(aligned_depth_frame.get_data()) * self.depth_scale
             depth[depth < 0] = 0
             np.nan_to_num(depth, nan=1000)
         else:
@@ -532,5 +600,7 @@ def load_dataset(args, path, config):
         return EurocDataset(args, path, config)
     elif config["Dataset"]["type"] == "realsense":
         return RealsenseDataset(args, path, config)
+    elif config["Dataset"]["type"] == "davis":
+        return DavisDataset(args, path, config)
     else:
         raise ValueError("Unknown dataset type")

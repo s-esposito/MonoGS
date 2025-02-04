@@ -1,0 +1,18 @@
+inherit_from: "configs/mono/davis/base_config.yaml"
+
+Dataset:
+  dataset_path: "datasets/davis/car-turn"
+  Calibration:
+    fx: 535.4
+    fy: 539.2
+    cx: 960.0
+    cy: 540.0
+    k1: 0.0
+    k2: 0.0
+    p1: 0.0
+    p2: 0.0
+    k3: 0.0
+    width: 1920
+    height: 1080
+    depth_scale: 5000.0
+    distorted: False

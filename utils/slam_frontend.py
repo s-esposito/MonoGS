@@ -184,9 +184,13 @@ class FrontEnd(mp.Process):
                     gui_utils.GaussianPacket(
                         current_frame=viewpoint,
                         gtcolor=viewpoint.original_image,
-                        gtdepth=viewpoint.depth
-                        if not self.monocular
-                        else np.zeros((viewpoint.image_height, viewpoint.image_width)),
+                        gtdepth=(
+                            viewpoint.depth
+                            if not self.monocular
+                            else np.zeros(
+                                (viewpoint.image_height, viewpoint.image_width)
+                            )
+                        ),
                     )
                 )
             if converged:
@@ -370,7 +374,7 @@ class FrontEnd(mp.Process):
                 if not self.initialized and self.requested_keyframe > 0:
                     time.sleep(0.01)
                     continue
-
+                        
                 viewpoint = Camera.init_from_dataset(
                     self.dataset, cur_frame_idx, projection_matrix
                 )
