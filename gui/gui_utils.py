@@ -48,22 +48,53 @@ class Frustum:
         self.up = up
 
 
-def create_frustum(pose, frusutum_color=[0, 1, 0], size=0.02):
-    points = (
-        np.array(
-            [
-                [0.0, 0.0, 0],
-                [1.0, -0.5, 2],
-                [-1.0, -0.5, 2],
-                [1.0, 0.5, 2],
-                [-1.0, 0.5, 2],
-            ]
-        )
-        * size
+def create_frustum(
+    pose,
+    H=None, W=None,
+    fx=None, fy=None,
+    cx=None, cy=None,
+    color=[0, 1, 0],
+    size=0.02
+):
+    # points = (
+    #     np.array(
+    #         [
+    #             [0.0, 0.0, 0],
+    #             [1.0, -1.0, 1],
+    #             [-1.0, -1.0, 1],
+    #             [1.0, 1.0, 1],
+    #             [-1.0, 1.0, 1],
+    #         ]
+    #     )
+    # )
+    # points = points * size
+        
+    # w, h
+    points_2d = np.array(
+        [
+            [W, 0.0],
+            [0.0, 0.0],
+            [W, H],
+            [0.0, H],
+        ]
     )
+    
+    u, v = points_2d[:, 0], points_2d[:, 1]
+    Z = np.ones_like(u)
 
+    X = (u - cx) * Z / fx
+    Y = (v - cy) * Z / fy
+    
+    points = np.stack([X, Y, Z], axis=1)
+    print("camera_space_points", points)
+    
+    # add [0, 0, 0] to the points
+    points = np.vstack([np.array([0, 0, 0]), points])
+    # 
+    points = points * size
+    
     lines = [[0, 1], [0, 2], [0, 3], [0, 4], [1, 2], [1, 3], [2, 4], [3, 4]]
-    colors = [frusutum_color for i in range(len(lines))]
+    colors = [color for i in range(len(lines))]
 
     canonical_line_set = o3d.geometry.LineSet()
     canonical_line_set.points = o3d.utility.Vector3dVector(points)
@@ -86,6 +117,12 @@ class GaussianPacket:
         keyframes=None,
         finish=False,
         kf_window=None,
+        H=None,
+        W=None,
+        fx=None,
+        fy=None,
+        cx=None,
+        cy=None,
     ):
         self.has_gaussians = False
         if gaussians is not None:
@@ -103,12 +140,18 @@ class GaussianPacket:
             self.unique_kfIDs = gaussians.unique_kfIDs.clone()
             self.n_obs = gaussians.n_obs.clone()
 
-        self.keyframe = keyframe
-        self.current_frame = current_frame
+        self.keyframe = keyframe  # pose
+        self.current_frame = current_frame  # pose
         self.gtcolor = self.resize_img(gtcolor, 320)
         self.gtdepth = self.resize_img(gtdepth, 320)
         self.gtnormal = self.resize_img(gtnormal, 320)
-        self.keyframes = keyframes
+        self.keyframes = keyframes  # poses
+        self.H = H
+        self.W = W
+        self.fx = fx
+        self.fy = fy
+        self.cx = cx
+        self.cy = cy
         self.finish = finish
         self.kf_window = kf_window
 

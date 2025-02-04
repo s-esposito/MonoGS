@@ -124,7 +124,7 @@ class SLAM_GUI:
         vp_subtile1 = gui.Vert(0.5 * em, gui.Margins(margin))
         vp_subtile2 = gui.Vert(0.5 * em, gui.Margins(margin))
 
-        ##Check boxes
+        ## Check boxes
         vp_subtile1.add_child(gui.Label("Camera follow options"))
         chbox_tile = gui.Horiz(0.5 * em, gui.Margins(margin))
         self.followcam_chbox = gui.Checkbox("Follow Camera")
@@ -249,7 +249,7 @@ class SLAM_GUI:
         self.g_renderer.update_camera_intrin(self.g_camera)
         self.g_renderer.set_render_reso(self.g_camera.w, self.g_camera.h)
 
-    def add_camera(self, camera, name, color=[0, 1, 0], gt=False, size=0.01):
+    def add_camera(self, camera, name, H=None, W=None, fx=None, fy=None, cx=None, cy=None, color=[0, 1, 0], gt=False, size=0.01):
         W2C = (
             getWorld2View2(camera.R_gt, camera.T_gt)
             if gt
@@ -257,13 +257,12 @@ class SLAM_GUI:
         )
         W2C = W2C.cpu().numpy()
         C2W = np.linalg.inv(W2C)
-        frustum = create_frustum(C2W, color, size=size)
+        # TODO: get intrinsics from camera
+        frustum = create_frustum(C2W, H=H, W=W, fx=fx, fy=fy, cx=cx, cy=cy, color=color, size=size)
         if name not in self.frustum_dict.keys():
-            frustum = create_frustum(C2W, color)
             self.combo_kf.add_item(name)
             self.frustum_dict[name] = frustum
             self.widget3d.scene.add_geometry(name, frustum.line_set, self.lit)
-        frustum = self.frustum_dict[name]
         frustum.update_pose(C2W)
         self.widget3d.scene.set_geometry_transform(name, C2W.astype(np.float64))
         self.widget3d.scene.show_geometry(name, self.cameras_chbox.checked)
@@ -403,8 +402,17 @@ class SLAM_GUI:
             self.init = True
 
         if gaussian_packet.current_frame is not None:
+            # add current camera
             frustum = self.add_camera(
-                gaussian_packet.current_frame, name="current", color=[0, 1, 0]
+                gaussian_packet.current_frame,
+                H=gaussian_packet.H,
+                W=gaussian_packet.W,
+                fx=gaussian_packet.fx,
+                fy=gaussian_packet.fy,
+                cx=gaussian_packet.cx,
+                cy=gaussian_packet.cy,
+                name="current",
+                color=[0, 1, 0]
             )
             if self.followcam_chbox.checked:
                 viewpoint = (
@@ -417,13 +425,31 @@ class SLAM_GUI:
         if gaussian_packet.keyframe is not None:
             name = "keyframe_{}".format(gaussian_packet.keyframe.uid)
             frustum = self.add_camera(
-                gaussian_packet.keyframe, name=name, color=[0, 0, 1]
+                gaussian_packet.keyframe,
+                H=gaussian_packet.H,
+                W=gaussian_packet.W,
+                fx=gaussian_packet.fx,
+                fy=gaussian_packet.fy,
+                cx=gaussian_packet.cx,
+                cy=gaussian_packet.cy,
+                name=name,
+                color=[0, 0, 1]
             )
 
         if gaussian_packet.keyframes is not None:
             for keyframe in gaussian_packet.keyframes:
                 name = "keyframe_{}".format(keyframe.uid)
-                frustum = self.add_camera(keyframe, name=name, color=[0, 0, 1])
+                frustum = self.add_camera(
+                    keyframe,
+                    H=gaussian_packet.H,
+                    W=gaussian_packet.W,
+                    fx=gaussian_packet.fx,
+                    fy=gaussian_packet.fy,
+                    cx=gaussian_packet.cx,
+                    cy=gaussian_packet.cy,
+                    name=name,
+                    color=[0, 0, 1]
+                )
 
         if gaussian_packet.kf_window is not None:
             self.kf_window = gaussian_packet.kf_window

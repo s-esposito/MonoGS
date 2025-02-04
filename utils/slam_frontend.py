@@ -183,6 +183,12 @@ class FrontEnd(mp.Process):
                 self.q_main2vis.put(
                     gui_utils.GaussianPacket(
                         current_frame=viewpoint,
+                        H=self.dataset.height,
+                        W=self.dataset.width,
+                        fx=self.dataset.fx,
+                        fy=self.dataset.fy,
+                        cx=self.dataset.cx,
+                        cy=self.dataset.cy,
                         gtcolor=viewpoint.original_image,
                         gtdepth=(
                             viewpoint.depth
@@ -403,6 +409,12 @@ class FrontEnd(mp.Process):
                     gui_utils.GaussianPacket(
                         gaussians=clone_obj(self.gaussians),
                         current_frame=viewpoint,
+                        H=self.dataset.height,
+                        W=self.dataset.width,
+                        fx=self.dataset.fx,
+                        fy=self.dataset.fy,
+                        cx=self.dataset.cx,
+                        cy=self.dataset.cy,
                         keyframes=keyframes,
                         kf_window=current_window_dict,
                     )
