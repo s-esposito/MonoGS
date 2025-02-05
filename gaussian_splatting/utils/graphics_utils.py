@@ -22,54 +22,53 @@ class BasicPointCloud(NamedTuple):
     normals: np.array
 
 
-def getWorld2View(R, t):
-    Rt = np.zeros((4, 4))
-    Rt[:3, :3] = R.transpose()
-    Rt[:3, 3] = t
-    Rt[3, 3] = 1.0
-    return np.float32(Rt)
+# def getWorld2View(R, t):
+#     Rt = np.zeros((4, 4))
+#     Rt[:3, :3] = R.transpose()
+#     Rt[:3, 3] = t
+#     Rt[3, 3] = 1.0
+#     return np.float32(Rt)
 
 
-def getWorld2View2(R, t, translate=torch.tensor([0.0, 0.0, 0.0]), scale=1.0):
+def getWorld2View(R, t, translate=torch.tensor([0.0, 0.0, 0.0]), scale=1.0):
     translate = translate.to(R.device)
     Rt = torch.zeros((4, 4), device=R.device)
-    # Rt[:3, :3] = R.transpose()
     Rt[:3, :3] = R
     Rt[:3, 3] = t
     Rt[3, 3] = 1.0
 
-    C2W = torch.linalg.inv(Rt)
-    cam_center = C2W[:3, 3]
+    c2w = torch.linalg.inv(Rt)
+    cam_center = c2w[:3, 3]
     cam_center = (cam_center + translate) * scale
-    C2W[:3, 3] = cam_center
-    Rt = torch.linalg.inv(C2W)
+    c2w[:3, 3] = cam_center
+    Rt = torch.linalg.inv(c2w)
     return Rt
 
 
-def getProjectionMatrix(znear, zfar, fovX, fovY):
-    tanHalfFovY = math.tan((fovY / 2))
-    tanHalfFovX = math.tan((fovX / 2))
+# def getProjectionMatrix(znear, zfar, fovX, fovY):
+#     tanHalfFovY = math.tan((fovY / 2))
+#     tanHalfFovX = math.tan((fovX / 2))
 
-    top = tanHalfFovY * znear
-    bottom = -top
-    right = tanHalfFovX * znear
-    left = -right
+#     top = tanHalfFovY * znear
+#     bottom = -top
+#     right = tanHalfFovX * znear
+#     left = -right
 
-    P = torch.zeros(4, 4)
+#     P = torch.zeros(4, 4)
 
-    z_sign = 1.0
+#     z_sign = 1.0
 
-    P[0, 0] = 2.0 * znear / (right - left)
-    P[1, 1] = 2.0 * znear / (top - bottom)
-    P[0, 2] = (right + left) / (right - left)
-    P[1, 2] = (top + bottom) / (top - bottom)
-    P[3, 2] = z_sign
-    P[2, 2] = -(zfar + znear) / (zfar - znear)
-    P[2, 3] = -2 * (zfar * znear) / (zfar - znear)
-    return P
+#     P[0, 0] = 2.0 * znear / (right - left)
+#     P[1, 1] = 2.0 * znear / (top - bottom)
+#     P[0, 2] = (right + left) / (right - left)
+#     P[1, 2] = (top + bottom) / (top - bottom)
+#     P[3, 2] = z_sign
+#     P[2, 2] = -(zfar + znear) / (zfar - znear)
+#     P[2, 3] = -2 * (zfar * znear) / (zfar - znear)
+#     return P
 
 
-def getProjectionMatrix2(znear, zfar, cx, cy, fx, fy, W, H):
+def getProjectionMatrix(znear, zfar, cx, cy, fx, fy, W, H):
     left = ((2 * cx - W) / W - 1.0) * W / 2.0
     right = ((2 * cx - W) / W + 1.0) * W / 2.0
     top = ((2 * cy - H) / H + 1.0) * H / 2.0
@@ -78,7 +77,7 @@ def getProjectionMatrix2(znear, zfar, cx, cy, fx, fy, W, H):
     right = znear / fx * right
     top = znear / fy * top
     bottom = znear / fy * bottom
-    P = torch.zeros(4, 4)
+    P = torch.zeros(4, 4, device=fx.device)
 
     z_sign = 1.0
 

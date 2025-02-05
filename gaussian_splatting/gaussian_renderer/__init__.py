@@ -17,12 +17,18 @@ from diff_gaussian_rasterization import (
     GaussianRasterizer,
 )
 
+from utils.camera_utils import (
+    CameraExtrinsics,
+    CameraIntrinsics,
+    get_full_proj_transform,
+)
 from gaussian_splatting.scene.gaussian_model import GaussianModel
 from gaussian_splatting.utils.sh_utils import eval_sh
 
 
 def render(
-    viewpoint_camera,
+    viewpoint_camera: CameraExtrinsics,
+    cam_intrinsics: CameraIntrinsics,
     pc: GaussianModel,
     pipe,
     bg_color: torch.Tensor,
@@ -52,19 +58,33 @@ def render(
         pass
 
     # Set up rasterization configuration
-    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+    tanfovx = math.tan(cam_intrinsics.FoVx * 0.5)
+    tanfovy = math.tan(cam_intrinsics.FoVy * 0.5)
+
+    # Set up rasterization configuration
+    # tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+    # tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+
+    # TODO: implement
+    full_proj_transform = get_full_proj_transform(
+        cam_extrinsics=viewpoint_camera, cam_intrinsics=cam_intrinsics
+    )
+    projection_matrix = cam_intrinsics.projection_matrix
 
     raster_settings = GaussianRasterizationSettings(
-        image_height=int(viewpoint_camera.image_height),
-        image_width=int(viewpoint_camera.image_width),
+        image_height=int(cam_intrinsics.height),
+        image_width=int(cam_intrinsics.width),
+        # image_height=int(viewpoint_camera.image_height),
+        # image_width=int(viewpoint_camera.image_width),
         tanfovx=tanfovx,
         tanfovy=tanfovy,
         bg=bg_color,
         scale_modifier=scaling_modifier,
         viewmatrix=viewpoint_camera.world_view_transform,
-        projmatrix=viewpoint_camera.full_proj_transform,
-        projmatrix_raw=viewpoint_camera.projection_matrix,
+        # projmatrix=viewpoint_camera.full_proj_transform,
+        # projmatrix_raw=viewpoint_camera.projection_matrix,
+        projmatrix=full_proj_transform,
+        projmatrix_raw=projection_matrix,
         sh_degree=pc.active_sh_degree,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,

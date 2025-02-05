@@ -48,10 +48,10 @@ class GaussianRenderBase:
     def set_render_mod(self, mod: int):
         raise NotImplementedError()
 
-    def update_camera_pose(self, camera: util.Camera):
+    def update_camera_pose(self, camera: util.CameraGL):
         raise NotImplementedError()
 
-    def update_camera_intrin(self, camera: util.Camera):
+    def update_camera_intrin(self, camera: util.CameraGL):
         raise NotImplementedError()
 
     def draw(self):
@@ -102,7 +102,7 @@ class OpenGLRenderer(GaussianRenderBase):
         )
         util.set_uniform_1int(self.program, gaus.sh_dim, "sh_dim")
 
-    def sort_and_update(self, camera: util.Camera):
+    def sort_and_update(self, camera: util.CameraGL):
         index = _sort_gaussian(self.gaussians, camera.get_view_matrix())
         self.index_bufferid = util.set_storage_buffer_data(
             self.program, "gi", index, bind_idx=1, buffer_id=self.index_bufferid
@@ -118,12 +118,12 @@ class OpenGLRenderer(GaussianRenderBase):
     def set_render_reso(self, w, h):
         gl.glViewport(0, 0, w, h)
 
-    def update_camera_pose(self, camera: util.Camera):
+    def update_camera_pose(self, camera: util.CameraGL):
         view_mat = camera.get_view_matrix()
         util.set_uniform_mat4(self.program, view_mat, "view_matrix")
         util.set_uniform_v3(self.program, camera.position, "cam_pos")
 
-    def update_camera_intrin(self, camera: util.Camera):
+    def update_camera_intrin(self, camera: util.CameraGL):
         proj_mat = camera.get_project_matrix()
         util.set_uniform_mat4(self.program, proj_mat, "projection_matrix")
         util.set_uniform_v3(self.program, camera.get_htanfovxy_focal(), "hfovxy_focal")

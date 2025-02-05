@@ -15,24 +15,33 @@ import torch.nn.functional as F
 from OpenGL import GL as gl
 
 from gaussian_splatting.gaussian_renderer import render
-from gaussian_splatting.utils.graphics_utils import fov2focal, getWorld2View2
-from gui.gl_render import util, util_gau
-from gui.gl_render.render_ogl import OpenGLRenderer
-from gui.gui_utils import (
+from gaussian_splatting.utils.graphics_utils import fov2focal, getWorld2View
+from viewer.gl_render import util, util_gau
+from viewer.gl_render.render_ogl import OpenGLRenderer
+from viewer.gui_utils import (
     GaussianPacket,
     Packet_vis2main,
     create_frustum,
     cv_gl,
     get_latest_queue,
 )
-from utils.camera_utils import Camera
+from utils.camera_utils import CameraExtrinsics, CameraIntrinsics
 from utils.logging_utils import Log
 
 o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 
 
-class SLAM_GUI:
+class Viewer:
     def __init__(self, params_gui=None):
+
+        self.window_w, self.window_h = 1920, 1080
+
+        self.window = gui.Application.instance.create_window(
+            "MonoGS", self.window_w, self.window_h
+        )
+        self.window.set_on_layout(self._on_layout)
+        self.window.set_on_close(self._on_close)
+
         self.step = 0
         self.process_finished = False
         self.device = "cuda"
@@ -44,6 +53,7 @@ class SLAM_GUI:
 
         self.q_main2vis = None
         self.gaussian_cur = None
+        self.cam_intrinsics_cur = None
         self.pipe = None
         self.background = None
 
@@ -51,19 +61,28 @@ class SLAM_GUI:
         self.kf_window = None
         self.render_img = None
 
+        self.width_3d = 1920
+        self.height_3d = 1080
+
         if params_gui is not None:
             self.background = params_gui.background
             self.gaussian_cur = params_gui.gaussians
+            self.cam_intrinsics_cur = params_gui.cam_intrinsics
             self.init = True
             self.q_main2vis = params_gui.q_main2vis
             self.q_vis2main = params_gui.q_vis2main
             self.pipe = params_gui.pipe
+            self.width_3d = params_gui.width_data
+            self.height_3d = params_gui.height_data
+
+        Log(f"Viewer resolution {self.window_w}x{self.window_h}", tag="GUI")
+        Log(f"Data resolution {self.width_3d}x{self.height_3d}", tag="GUI")
 
         self.gaussian_nums = []
 
-        self.g_camera = util.Camera(self.window_h, self.window_w)
+        self.camera_gl = util.CameraGL(self.window_h, self.window_w)
         self.window_gl = self.init_glfw()
-        self.g_renderer = OpenGLRenderer(self.g_camera.w, self.g_camera.h)
+        self.renderer_gl = OpenGLRenderer(self.camera_gl.w, self.camera_gl.h)
 
         gl.glEnable(gl.GL_TEXTURE_2D)
         gl.glEnable(gl.GL_DEPTH_TEST)
@@ -77,13 +96,7 @@ class SLAM_GUI:
         threading.Thread(target=self._update_thread).start()
 
     def init_widget(self):
-        self.window_w, self.window_h = 1600, 900
 
-        self.window = gui.Application.instance.create_window(
-            "MonoGS", self.window_w, self.window_h
-        )
-        self.window.set_on_layout(self._on_layout)
-        self.window.set_on_close(self._on_close)
         self.widget3d = gui.SceneWidget()
         self.widget3d.scene = rendering.Open3DScene(self.window.renderer)
 
@@ -241,30 +254,44 @@ class SLAM_GUI:
         return window
 
     def update_activated_renderer_state(self, gaus):
-        self.g_renderer.update_gaussian_data(gaus)
-        self.g_renderer.sort_and_update(self.g_camera)
-        self.g_renderer.set_scale_modifier(self.scaling_slider.double_value)
-        self.g_renderer.set_render_mod(-4)
-        self.g_renderer.update_camera_pose(self.g_camera)
-        self.g_renderer.update_camera_intrin(self.g_camera)
-        self.g_renderer.set_render_reso(self.g_camera.w, self.g_camera.h)
+        self.renderer_gl.update_gaussian_data(gaus)
+        self.renderer_gl.sort_and_update(self.camera_gl)
+        self.renderer_gl.set_scale_modifier(self.scaling_slider.double_value)
+        self.renderer_gl.set_render_mod(-4)
+        self.renderer_gl.update_camera_pose(self.camera_gl)
+        self.renderer_gl.update_camera_intrin(self.camera_gl)
+        self.renderer_gl.set_render_reso(self.camera_gl.w, self.camera_gl.h)
 
-    def add_camera(self, camera, name, H=None, W=None, fx=None, fy=None, cx=None, cy=None, color=[0, 1, 0], gt=False, size=1.0):
-        W2C = (
-            getWorld2View2(camera.R_gt, camera.T_gt)
-            if gt
-            else getWorld2View2(camera.R, camera.T)
+    def add_camera(
+        self, camera, name, color=[0, 1, 0], gt=False, size=1.0
+    ):
+        if gt:
+            if camera.R_gt is None or camera.T_gt is None:
+                # no gt pose
+                return
+            else:
+                w2c = getWorld2View(camera.R_gt, camera.T_gt)
+        else:
+            w2c = getWorld2View(camera.R, camera.T)
+
+        w2c = w2c.cpu().numpy()
+        c2w = np.linalg.inv(w2c)
+        # get intrinsics from camera
+        fx = self.cam_intrinsics_cur.fx.detach().cpu().numpy()
+        fy = self.cam_intrinsics_cur.fy.detach().cpu().numpy()
+        cx = self.cam_intrinsics_cur.cx
+        cy = self.cam_intrinsics_cur.cy
+        H = self.cam_intrinsics_cur.height
+        W = self.cam_intrinsics_cur.width
+        frustum = create_frustum(
+            c2w, H=H, W=W, fx=fx, fy=fy, cx=cx, cy=cy, color=color, size=size
         )
-        W2C = W2C.cpu().numpy()
-        C2W = np.linalg.inv(W2C)
-        # TODO: get intrinsics from camera
-        frustum = create_frustum(C2W, H=H, W=W, fx=fx, fy=fy, cx=cx, cy=cy, color=color, size=size)
         if name not in self.frustum_dict.keys():
             self.combo_kf.add_item(name)
             self.frustum_dict[name] = frustum
             self.widget3d.scene.add_geometry(name, frustum.line_set, self.lit)
-        frustum.update_pose(C2W)
-        self.widget3d.scene.set_geometry_transform(name, C2W.astype(np.float64))
+        frustum.update_pose(c2w)
+        self.widget3d.scene.set_geometry_transform(name, c2w.astype(np.float64))
         self.widget3d.scene.show_geometry(name, self.cameras_chbox.checked)
         return frustum
 
@@ -272,7 +299,9 @@ class SLAM_GUI:
         contentRect = self.window.content_rect
         self.widget3d_width_ratio = 0.7
         self.widget3d_width = int(
-            self.window.size.width * self.widget3d_width_ratio
+            # self.window.size.width * self.widget3d_width_ratio
+            self.width_3d
+            * self.widget3d_width_ratio
         )  # 15 ems wide
         self.widget3d.frame = gui.Rect(
             contentRect.x, contentRect.y, self.widget3d_width, contentRect.height
@@ -375,17 +404,6 @@ class SLAM_GUI:
         height = int(width * img.shape[0] / img.shape[1])
         return cv2.resize(img, (width, height))
 
-    def add_ids(self):
-        indices = (
-            torch.unique(self.gaussian_cur.unique_kfIDs).cpu().numpy().astype(int)
-        ).tolist()
-        for idx in indices:
-            if idx in self.gaussian_id_dict.keys():
-                continue
-
-            self.gaussian_id_dict[idx] = 0
-            self.combo_gaussian_id.add_item(str(idx))
-
     def receive_data(self, q):
         if q is None:
             return
@@ -394,6 +412,10 @@ class SLAM_GUI:
         if gaussian_packet is None:
             return
 
+        if gaussian_packet.cam_intrinsics is not None:
+            self.cam_intrinsics_cur = gaussian_packet.cam_intrinsics
+            self.init = True
+        
         if gaussian_packet.has_gaussians:
             self.gaussian_cur = gaussian_packet
             self.output_info.text = "Number of Gaussians: {}".format(
@@ -405,14 +427,8 @@ class SLAM_GUI:
             # add current camera
             frustum = self.add_camera(
                 gaussian_packet.current_frame,
-                H=gaussian_packet.H,
-                W=gaussian_packet.W,
-                fx=gaussian_packet.fx,
-                fy=gaussian_packet.fy,
-                cx=gaussian_packet.cx,
-                cy=gaussian_packet.cy,
                 name="current",
-                color=[0, 1, 0]
+                color=[0, 1, 0],
             )
             if self.followcam_chbox.checked:
                 viewpoint = (
@@ -426,14 +442,8 @@ class SLAM_GUI:
             name = "keyframe_{}".format(gaussian_packet.keyframe.uid)
             frustum = self.add_camera(
                 gaussian_packet.keyframe,
-                H=gaussian_packet.H,
-                W=gaussian_packet.W,
-                fx=gaussian_packet.fx,
-                fy=gaussian_packet.fy,
-                cx=gaussian_packet.cx,
-                cy=gaussian_packet.cy,
                 name=name,
-                color=[0, 0, 1]
+                color=[0, 0, 1],
             )
 
         if gaussian_packet.keyframes is not None:
@@ -441,14 +451,8 @@ class SLAM_GUI:
                 name = "keyframe_{}".format(keyframe.uid)
                 frustum = self.add_camera(
                     keyframe,
-                    H=gaussian_packet.H,
-                    W=gaussian_packet.W,
-                    fx=gaussian_packet.fx,
-                    fy=gaussian_packet.fy,
-                    cx=gaussian_packet.cx,
-                    cy=gaussian_packet.cy,
                     name=name,
-                    color=[0, 0, 1]
+                    color=[0, 0, 1],
                 )
 
         if gaussian_packet.kf_window is not None:
@@ -483,48 +487,48 @@ class SLAM_GUI:
             self.q_main2vis = None
             self.process_finished = True
 
-    @staticmethod
-    def depth_to_normal(points, k=3, d_min=1e-3, d_max=10.0):
-        k = (k - 1) // 2
-        # points: (B, 3, H, W)
-        b, _, h, w = points.size()
-        points_pad = F.pad(
-            points, (k, k, k, k), mode="constant", value=0
-        )  # (B, 3, k+H+k, k+W+k)
-        if d_max is not None:
-            valid_pad = (points_pad[:, 2:, :, :] > d_min) & (
-                points_pad[:, 2:, :, :] < d_max
-            )  # (B, 1, k+H+k, k+W+k)
-        else:
-            valid_pad = points_pad[:, 2:, :, :] > d_min
-        valid_pad = valid_pad.float()
+    # @staticmethod
+    # def depth_to_normal(points, k=3, d_min=1e-3, d_max=10.0):
+    #     k = (k - 1) // 2
+    #     # points: (B, 3, H, W)
+    #     b, _, h, w = points.size()
+    #     points_pad = F.pad(
+    #         points, (k, k, k, k), mode="constant", value=0
+    #     )  # (B, 3, k+H+k, k+W+k)
+    #     if d_max is not None:
+    #         valid_pad = (points_pad[:, 2:, :, :] > d_min) & (
+    #             points_pad[:, 2:, :, :] < d_max
+    #         )  # (B, 1, k+H+k, k+W+k)
+    #     else:
+    #         valid_pad = points_pad[:, 2:, :, :] > d_min
+    #     valid_pad = valid_pad.float()
 
-        # vertical vector (top - bottom)
-        vec_vert = (
-            points_pad[:, :, :h, k : w + k]
-            - points_pad[:, :, 2 * k : h + (2 * k), k : w + k]
-        )
+    #     # vertical vector (top - bottom)
+    #     vec_vert = (
+    #         points_pad[:, :, :h, k : w + k]
+    #         - points_pad[:, :, 2 * k : h + (2 * k), k : w + k]
+    #     )
 
-        # horizontal vector (left - right)
-        vec_hori = (
-            points_pad[:, :, k : h + k, :w]
-            - points_pad[:, :, k : h + k, 2 * k : w + (2 * k)]
-        )
+    #     # horizontal vector (left - right)
+    #     vec_hori = (
+    #         points_pad[:, :, k : h + k, :w]
+    #         - points_pad[:, :, k : h + k, 2 * k : w + (2 * k)]
+    #     )
 
-        # valid_mask
-        valid_mask = (
-            valid_pad[:, :, k : h + k, k : w + k]
-            * valid_pad[:, :, :h, k : w + k]
-            * valid_pad[:, :, 2 * k : h + (2 * k), k : w + k]
-            * valid_pad[:, :, k : h + k, :w]
-            * valid_pad[:, :, k : h + k, 2 * k : w + (2 * k)]
-        )
-        valid_mask = valid_mask > 0.5
+    #     # valid_mask
+    #     valid_mask = (
+    #         valid_pad[:, :, k : h + k, k : w + k]
+    #         * valid_pad[:, :, :h, k : w + k]
+    #         * valid_pad[:, :, 2 * k : h + (2 * k), k : w + k]
+    #         * valid_pad[:, :, k : h + k, :w]
+    #         * valid_pad[:, :, k : h + k, 2 * k : w + (2 * k)]
+    #     )
+    #     valid_mask = valid_mask > 0.5
 
-        # get cross product (B, 3, H, W)
-        cross_product = -torch.linalg.cross(vec_vert, vec_hori, dim=1)
-        normal = F.normalize(cross_product, p=2.0, dim=1, eps=1e-12)
-        return normal, valid_mask
+    #     # get cross product (B, 3, H, W)
+    #     cross_product = -torch.linalg.cross(vec_vert, vec_hori, dim=1)
+    #     normal = F.normalize(cross_product, p=2.0, dim=1, eps=1e-12)
+    #     return normal, valid_mask
 
     @staticmethod
     def vfov_to_hfov(vfov_deg, height, width):
@@ -533,37 +537,7 @@ class SLAM_GUI:
             2 * np.arctan(width * np.tan(np.deg2rad(vfov_deg) / 2) / height)
         )
 
-    def get_current_cam(self):
-        w2c = cv_gl @ self.widget3d.scene.camera.get_view_matrix()
-
-        image_gui = torch.zeros(
-            (1, int(self.window.size.height), int(self.widget3d_width))
-        )
-        vfov_deg = self.widget3d.scene.camera.get_field_of_view()
-        hfov_deg = self.vfov_to_hfov(vfov_deg, image_gui.shape[1], image_gui.shape[2])
-        FoVx = np.deg2rad(hfov_deg)
-        FoVy = np.deg2rad(vfov_deg)
-        fx = fov2focal(FoVx, image_gui.shape[2])
-        fy = fov2focal(FoVy, image_gui.shape[1])
-        cx = image_gui.shape[2] // 2
-        cy = image_gui.shape[1] // 2
-        T = torch.from_numpy(w2c)
-        current_cam = Camera.init_from_gui(
-            uid=-1,
-            T=T,
-            FoVx=FoVx,
-            FoVy=FoVy,
-            fx=fx,
-            fy=fy,
-            cx=cx,
-            cy=cy,
-            H=image_gui.shape[1],
-            W=image_gui.shape[2],
-        )
-        current_cam.update_RT(T[0:3, 0:3], T[0:3, 3])
-        return current_cam
-
-    def rasterise(self, current_cam):
+    def rasterise(self, current_cam, cam_intrinsics):
         if (
             self.time_shader_chbox.checked
             and self.gaussian_cur is not None
@@ -578,25 +552,27 @@ class SLAM_GUI:
             self.gaussian_cur.get_features = alpha * features + (
                 1 - alpha
             ) * torch.from_numpy(rgb_kf).to(features.device)
-            rendering_data = render(
-                current_cam,
-                self.gaussian_cur,
-                self.pipe,
-                self.background,
-                self.scaling_slider.double_value,
-            )
+        
+        # render the scene
+        rendering_data = render(
+            current_cam,
+            cam_intrinsics,
+            self.gaussian_cur,
+            self.pipe,
+            self.background,
+            self.scaling_slider.double_value,
+        )
+        
+        if (
+            self.time_shader_chbox.checked
+            and self.gaussian_cur is not None
+            and type(self.gaussian_cur) == GaussianPacket
+        ):
             self.gaussian_cur.get_features = features
-        else:
-            rendering_data = render(
-                current_cam,
-                self.gaussian_cur,
-                self.pipe,
-                self.background,
-                self.scaling_slider.double_value,
-            )
+        
         return rendering_data
 
-    def render_o3d_image(self, results, current_cam):
+    def render_o3d_image(self, results, current_cam, cam_intrinsics):
         if self.depth_chbox.checked:
             depth = results["depth"]
             depth = depth[0, :, :].detach().cpu().numpy()
@@ -631,19 +607,30 @@ class SLAM_GUI:
                 | gl.GL_DEPTH_BUFFER_BIT
                 | gl.GL_STENCIL_BUFFER_BIT
             )
+            
+            w2c = getWorld2View(current_cam.R, current_cam.T)
 
-            w = int(self.window.size.width * self.widget3d_width_ratio)
-            glfw.set_window_size(self.window_gl, w, self.window.size.height)
-            self.g_camera.fovy = current_cam.FoVy
-            self.g_camera.update_resolution(self.window.size.height, w)
-            self.g_renderer.set_render_reso(w, self.window.size.height)
+            w2c = w2c.cpu().numpy()
+            c2w = np.linalg.inv(w2c)
+            # get intrinsics from camera
+            fx = cam_intrinsics.fx.detach().cpu().numpy()
+            fy = cam_intrinsics.fy.detach().cpu().numpy()
+            cx = cam_intrinsics.cx
+            cy = cam_intrinsics.cy
+            H = cam_intrinsics.height
+            W = cam_intrinsics.width
             frustum = create_frustum(
-                np.linalg.inv(cv_gl @ self.widget3d.scene.camera.get_view_matrix())
+                c2w, H=H, W=W, fx=fx, fy=fy, cx=cx, cy=cy
             )
+            
+            glfw.set_window_size(self.window_gl, W, H)
+            self.camera_gl.fovy = cam_intrinsics.FoVy
+            self.camera_gl.update_resolution(H, W)
+            self.renderer_gl.set_render_reso(W, H)
 
-            self.g_camera.position = frustum.eye.astype(np.float32)
-            self.g_camera.target = frustum.center.astype(np.float32)
-            self.g_camera.up = frustum.up.astype(np.float32)
+            self.camera_gl.position = frustum.eye.astype(np.float32)
+            self.camera_gl.target = frustum.center.astype(np.float32)
+            self.camera_gl.up = frustum.up.astype(np.float32)
 
             self.gaussians_gl.xyz = self.gaussian_cur.get_xyz.cpu().numpy()
             self.gaussians_gl.opacity = self.gaussian_cur.get_opacity.cpu().numpy()
@@ -652,14 +639,14 @@ class SLAM_GUI:
             self.gaussians_gl.sh = self.gaussian_cur.get_features.cpu().numpy()[:, 0, :]
 
             self.update_activated_renderer_state(self.gaussians_gl)
-            self.g_renderer.sort_and_update(self.g_camera)
+            self.renderer_gl.sort_and_update(self.camera_gl)
             width, height = glfw.get_framebuffer_size(self.window_gl)
-            self.g_renderer.draw()
+            self.renderer_gl.draw()
             bufferdata = gl.glReadPixels(
                 0, 0, width, height, gl.GL_RGB, gl.GL_UNSIGNED_BYTE
             )
             img = np.frombuffer(bufferdata, np.uint8, -1).reshape(height, width, 3)
-            cv2.flip(img, 0, img)
+            img = cv2.flip(img, 0)
             render_img = o3d.geometry.Image(img)
             glfw.swap_buffers(self.window_gl)
         else:
@@ -675,13 +662,42 @@ class SLAM_GUI:
         return render_img
 
     def render_gui(self):
-        if not self.init:
-            return
-        current_cam = self.get_current_cam()
-        results = self.rasterise(current_cam)
+        
+        # TODO: needed ??
+        # if not self.init:
+        #     return
+        # 
+        
+        w2c = cv_gl @ self.widget3d.scene.camera.get_view_matrix()
+        T = torch.from_numpy(w2c)
+        current_cam = CameraExtrinsics.init_from_gui(
+            uid=-1,
+            T=T
+        )
+        # TODO: needed?
+        current_cam.update_RT(T[0:3, 0:3], T[0:3, 3])
+        
+        # get intrinsics from camera
+        height = int(self.window.size.height)
+        width = int(self.widget3d_width)
+
+        vfov_deg = self.widget3d.scene.camera.get_field_of_view()
+        # hfov_deg = self.vfov_to_hfov(vfov_deg, image_gui.shape[1], image_gui.shape[2])
+        hfov_deg = self.vfov_to_hfov(vfov_deg, height, width)
+        FoVx = np.deg2rad(hfov_deg)
+        FoVy = np.deg2rad(vfov_deg)
+        fx = fov2focal(FoVx, width)  # image_gui.shape[2])
+        fy = fov2focal(FoVy, height)  # image_gui.shape[1])
+        cx = width // 2  # image_gui.shape[2] // 2
+        cy = height // 2  # image_gui.shape[1] // 2
+        cam_intrinsics = CameraIntrinsics.init_from_gui(
+            fx, fy, cx, cy, height, width
+        )
+        
+        results = self.rasterise(current_cam, cam_intrinsics)
         if results is None:
             return
-        self.render_img = self.render_o3d_image(results, current_cam)
+        self.render_img = self.render_o3d_image(results, current_cam, cam_intrinsics)
         self.widget3d.scene.set_background([0, 0, 0, 1], self.render_img)
 
     def scene_update(self):
@@ -710,16 +726,16 @@ class SLAM_GUI:
 def run(params_gui=None):
     app = o3d.visualization.gui.Application.instance
     app.initialize()
-    win = SLAM_GUI(params_gui)
+    win = Viewer(params_gui)
     app.run()
 
 
-def main():
-    app = o3d.visualization.gui.Application.instance
-    app.initialize()
-    win = SLAM_GUI()
-    app.run()
+# def main():
+#     app = o3d.visualization.gui.Application.instance
+#     app.initialize()
+#     win = Viewer()
+#     app.run()
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

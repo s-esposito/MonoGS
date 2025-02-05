@@ -26,7 +26,7 @@ from gaussian_splatting.utils.general_utils import (
     inverse_sigmoid,
     strip_symmetric,
 )
-from gaussian_splatting.utils.graphics_utils import BasicPointCloud, getWorld2View2
+from gaussian_splatting.utils.graphics_utils import BasicPointCloud, getWorld2View
 from gaussian_splatting.utils.sh_utils import RGB2SH
 from gaussian_splatting.utils.system_utils import mkdir_p
 
@@ -104,10 +104,10 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
-    def create_pcd_from_image(self, cam_info, init=False, scale=2.0, depthmap=None):
+    def create_pcd_from_image(self, cam, cam_intrinsics, init=False, scale=2.0, depthmap=None):
         #
-        Log("Creating PCD from image")
-        cam = cam_info
+        Log("Creating PCD from image", tag="Backend")
+
         image_ab = (torch.exp(cam.exposure_a)) * cam.original_image + cam.exposure_b
         image_ab = torch.clamp(image_ab, 0.0, 1.0)
         rgb_raw = (image_ab * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy()
@@ -130,26 +130,26 @@ class GaussianModel:
             rgb = o3d.geometry.Image(rgb_raw.astype(np.uint8))
             depth = o3d.geometry.Image(depth_raw.astype(np.float32))
 
-        return self.create_pcd_from_image_and_depth(cam, rgb, depth, init)
+        return self.create_pcd_from_image_and_depth(cam, cam_intrinsics, rgb, depth, init)
 
-    def create_pcd_from_image_and_depth(self, cam, rgb, depth, init=False):
+    def create_pcd_from_image_and_depth(self, cam, cam_intrinsics, rgb, depth, init=False):
         #
-        Log("Creating PCD from image and depth")
+        # Log("Creating PCD from image and depth")
         if init:
             # Downsample factor for initialization
             downsample_factor = self.config["Dataset"]["pcd_downsample_init"]
         else:
             downsample_factor = self.config["Dataset"]["pcd_downsample"]
-        print("downsample_factor", downsample_factor)
+        # print("downsample_factor", downsample_factor)
 
         point_size = self.config["Dataset"]["point_size"]
 
         if "adaptive_pointsize" in self.config["Dataset"]:
-            print("using adaptive point size")
+            # print("using adaptive point size")
             if self.config["Dataset"]["adaptive_pointsize"]:
                 point_size = min(0.05, point_size * np.median(depth))
 
-        print("point_size", point_size)
+        # print("point_size", point_size)
 
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
             rgb,
@@ -158,32 +158,32 @@ class GaussianModel:
             depth_trunc=100.0,
             convert_rgb_to_intensity=False,
         )
-        print("RGBD image created")
+        # print("RGBD image created")
 
-        W2C = getWorld2View2(cam.R, cam.T).cpu().numpy()
-        print("w2c", W2C)
+        w2c = getWorld2View(cam.R, cam.T).cpu().numpy()
+        # print("w2c", w2c)
 
         pcd_tmp = o3d.geometry.PointCloud.create_from_rgbd_image(
             rgbd,
             o3d.camera.PinholeCameraIntrinsic(
-                cam.image_width,
-                cam.image_height,
-                cam.fx,
-                cam.fy,
-                cam.cx,
-                cam.cy,
+                cam_intrinsics.width,
+                cam_intrinsics.height,
+                cam_intrinsics.fx,
+                cam_intrinsics.fy,
+                cam_intrinsics.cx,
+                cam_intrinsics.cy,
             ),
-            extrinsic=W2C,
+            extrinsic=w2c,
             project_valid_depth_only=True,
         )
-        print("Point cloud created")
+        # print("Point cloud created")
         pcd_tmp = pcd_tmp.random_down_sample(1.0 / downsample_factor)
-        print("Point cloud downsampled")
+        # print("Point cloud downsampled")
 
         new_xyz = np.asarray(pcd_tmp.points)
         new_rgb = np.asarray(pcd_tmp.colors)
-        print("new_xyz.shape", new_xyz.shape)
-        print("new_rgb.shape", new_rgb.shape)
+        # print("new_xyz.shape", new_xyz.shape)
+        # print("new_rgb.shape", new_rgb.shape)
 
         pcd = BasicPointCloud(
             points=new_xyz, colors=new_rgb, normals=np.zeros((new_xyz.shape[0], 3))
@@ -191,7 +191,7 @@ class GaussianModel:
         self.ply_input = pcd
 
         #
-        Log("Init. features")
+        # Log("Init. features", tag="GaussianModel")
         fused_point_cloud = torch.from_numpy(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.from_numpy(np.asarray(pcd.colors)).float().cuda())
         features = (
@@ -203,7 +203,7 @@ class GaussianModel:
         features[:, 3:, 1:] = 0.0
 
         #
-        Log("Init. scales")
+        # Log("Init. scales", tag="GaussianModel")
         dist2 = (
             torch.clamp_min(
                 distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),
@@ -216,7 +216,7 @@ class GaussianModel:
             scales = scales.repeat(1, 3)
 
         #
-        Log("Init. rotations")
+        # Log("Init. rotations", tag="GaussianModel")
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
         opacities = inverse_sigmoid(
@@ -235,12 +235,7 @@ class GaussianModel:
         self, fused_point_cloud, features, scales, rots, opacities, kf_id
     ):
         #
-        Log("Extending PCD")
-        print("fused_point_cloud.shape", fused_point_cloud.shape)
-        print("features.shape", features.shape)
-        print("scales.shape", scales.shape)
-        print("rots.shape", rots.shape)
-        print("opacities.shape", opacities.shape)
+        Log("Extending PCD", tag="Backend")
 
         new_xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         new_features_dc = nn.Parameter(
@@ -267,10 +262,10 @@ class GaussianModel:
         )
 
     def extend_from_pcd_seq(
-        self, cam_info, kf_id=-1, init=False, scale=2.0, depthmap=None
+        self, cam, cam_intrinsics, kf_id=-1, init=False, scale=2.0, depthmap=None
     ):
         fused_point_cloud, features, scales, rots, opacities = (
-            self.create_pcd_from_image(cam_info, init, scale=scale, depthmap=depthmap)
+            self.create_pcd_from_image(cam, cam_intrinsics, init, scale=scale, depthmap=depthmap)
         )
         self.extend_from_pcd(
             fused_point_cloud, features, scales, rots, opacities, kf_id

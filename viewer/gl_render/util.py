@@ -4,7 +4,7 @@ import OpenGL.GL.shaders as shaders
 from OpenGL.GL import *
 
 
-class Camera:
+class CameraGL:
     def __init__(self, h, w):
         self.znear = 0.00001
         self.zfar = 100

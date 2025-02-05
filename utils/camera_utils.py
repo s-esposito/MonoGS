@@ -1,55 +1,111 @@
 import torch
 from torch import nn
 
-from gaussian_splatting.utils.graphics_utils import getProjectionMatrix2, getWorld2View2
+from gaussian_splatting.utils.graphics_utils import getProjectionMatrix, getWorld2View
 from utils.slam_utils import image_gradient, image_gradient_mask
 
 
-class Camera(nn.Module):
+class CameraIntrinsics(nn.Module):
+    def __init__(
+        self,
+        fx,
+        fy,
+        cx,
+        cy,
+        height,
+        width,
+        device="cuda:0",
+    ):
+        super(CameraIntrinsics, self).__init__()
+        self.cx = cx
+        self.cy = cy
+        self.height = height
+        self.width = width
+        self.device = device
+
+        # TODO: test with requires_grad=True
+        self.fx = nn.Parameter(torch.tensor([fx], requires_grad=False, device=device))
+        self.fy = nn.Parameter(torch.tensor([fy], requires_grad=False, device=device))
+
+    @property
+    def FoVx(self):
+        return 2 * torch.atan(self.width / (2 * self.fx)).cpu().item()
+
+    @property
+    def FoVy(self):
+        return 2 * torch.atan(self.height / (2 * self.fy)).cpu().item()
+
+    @property
+    def projection_matrix(self):
+        return getProjectionMatrix(
+            znear=0.01,
+            zfar=100.0,
+            fx=self.fx,
+            fy=self.fy,
+            cx=self.cx,
+            cy=self.cy,
+            W=self.width,
+            H=self.height,
+        ).transpose(0, 1)
+
+    @staticmethod
+    def init_from_dataset(dataset):
+        return CameraIntrinsics(
+            dataset.fx,
+            dataset.fy,
+            dataset.cx,
+            dataset.cy,
+            dataset.height,
+            dataset.width,
+            device=dataset.device,
+        )
+        
+    @staticmethod
+    def init_from_gui(
+        fx,
+        fy,
+        cx,
+        cy,
+        height,
+        width,
+    ):
+        return CameraIntrinsics(
+            fx,
+            fy,
+            cx,
+            cy,
+            height,
+            width,
+        )
+
+
+class CameraExtrinsics(nn.Module):
     def __init__(
         self,
         uid,
         color,
         depth,
-        projection_matrix,
-        fx,
-        fy,
-        cx,
-        cy,
-        fovx,
-        fovy,
-        image_height,
-        image_width,
         gt_T=None,
         device="cuda:0",
     ):
-        super(Camera, self).__init__()
+        super(CameraExtrinsics, self).__init__()
         self.uid = uid
         self.device = device
 
         T = torch.eye(4, device=device)
         self.R = T[:3, :3]
         self.T = T[:3, 3]
-        
-        # TODO: handle the case where gt_T is None differently
+
         if gt_T is None:
-            gt_T = torch.eye(4, device=device)
-            
-        self.R_gt = gt_T[:3, :3]
-        self.T_gt = gt_T[:3, 3]
+            self.R_gt = None
+            self.T_gt = None
+        else:
+            self.R_gt = gt_T[:3, :3]
+            self.T_gt = gt_T[:3, 3]
 
         self.original_image = color
         self.depth = depth
         self.grad_mask = None
-
-        self.fx = fx
-        self.fy = fy
-        self.cx = cx
-        self.cy = cy
-        self.FoVx = fovx
-        self.FoVy = fovy
-        self.image_height = image_height
-        self.image_width = image_width
 
         self.cam_rot_delta = nn.Parameter(
             torch.zeros(3, requires_grad=True, device=device)
@@ -65,60 +121,37 @@ class Camera(nn.Module):
             torch.tensor([0.0], requires_grad=True, device=device)
         )
 
-        self.projection_matrix = projection_matrix.to(device=device)
+        # self.projection_matrix = projection_matrix.to(device=device)
 
     @staticmethod
-    def init_from_dataset(dataset, idx, projection_matrix):
+    def init_from_dataset(
+        dataset,
+        idx,
+    ):
         gt_color, gt_depth, gt_pose = dataset[idx]
-        return Camera(
+        return CameraExtrinsics(
             idx,
             gt_color,
             gt_depth,
-            projection_matrix,
-            dataset.fx,
-            dataset.fy,
-            dataset.cx,
-            dataset.cy,
-            dataset.fovx,
-            dataset.fovy,
-            dataset.height,
-            dataset.width,
             gt_T=gt_pose,
             device=dataset.device,
         )
 
     @staticmethod
-    def init_from_gui(uid, T, FoVx, FoVy, fx, fy, cx, cy, H, W):
-        projection_matrix = getProjectionMatrix2(
-            znear=0.01, zfar=100.0, fx=fx, fy=fy, cx=cx, cy=cy, W=W, H=H
-        ).transpose(0, 1)
-        return Camera(
+    def init_from_gui(
+        uid,
+        T,
+    ):
+        return CameraExtrinsics(
             uid,
             color=None,
             depth=None,
-            projection_matrix=projection_matrix,
-            fx=fx,
-            fy=fy,
-            cx=cx,
-            cy=cy,
-            fovx=FoVx,
-            fovy=FoVy,
-            image_height=H,
-            image_width=W,
             gt_T=T,
         )
 
     @property
     def world_view_transform(self):
-        return getWorld2View2(self.R, self.T).transpose(0, 1)
-
-    @property
-    def full_proj_transform(self):
-        return (
-            self.world_view_transform.unsqueeze(0).bmm(
-                self.projection_matrix.unsqueeze(0)
-            )
-        ).squeeze(0)
+        return getWorld2View(self.R, self.T).transpose(0, 1)
 
     @property
     def camera_center(self):
@@ -169,3 +202,13 @@ class Camera(nn.Module):
 
         self.exposure_a = None
         self.exposure_b = None
+
+
+def get_full_proj_transform(
+    cam_extrinsics: CameraExtrinsics, cam_intrinsics: CameraIntrinsics
+):
+    world_view_transform = cam_extrinsics.world_view_transform
+    projection_matrix = cam_intrinsics.projection_matrix
+    return (
+        world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))
+    ).squeeze(0)

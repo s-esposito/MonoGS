@@ -24,24 +24,24 @@ class DavisParser:
         self.input_folder = input_folder
         self.load_poses(self.input_folder, frame_rate=24)
         self.n_img = len(self.color_paths)
-        
+
         # this dataset has no ground truth trajectory info
-    
+
     def load_poses(self, datapath, frame_rate=-1):
-        
+
         self.color_paths, self.poses, self.depth_paths, self.frames = [], [], [], []
         self.segmentation_paths = []
 
         # list all files in datapath/rgb
         self.color_paths = sorted(glob.glob(f"{datapath}/rgb/*.jpg"))
         # sort
-        self.color_paths.sort(key=lambda f: int(''.join(filter(str.isdigit, f))))
-        
+        self.color_paths.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
+
         # list all files in datapath/segmentation
         self.segmentation_paths = sorted(glob.glob(f"{datapath}/segmentation/*.png"))
         # sort
-        self.segmentation_paths.sort(key=lambda f: int(''.join(filter(str.isdigit, f))))
-        
+        self.segmentation_paths.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
+
         # for ix in indicies:
         #     (i, j, k) = associations[ix]
         #     self.color_paths += [os.path.join(datapath, image_data[i, 1])]
@@ -60,7 +60,7 @@ class DavisParser:
         #     }
 
         #     self.frames.append(frame)
-        
+
 
 class ReplicaParser:
     def __init__(self, input_folder):
@@ -294,6 +294,7 @@ class MonocularDataset(BaseDataset):
         # segmentation masks
         self.has_segmentation = False
         self.segmentation_paths = []
+        self.segments_ids = []
         # gt poses
         self.has_traj = True
         self.poses = []
@@ -313,36 +314,51 @@ class MonocularDataset(BaseDataset):
 
     def __getitem__(self, idx):
         color_path = self.color_paths[idx]
-        
-        if len(self.poses) == 0:
-            pose = None
-        else:
+
+        # gt pose if available
+        if self.has_traj:
             pose = self.poses[idx]
+            pose = torch.from_numpy(pose).to(device=self.device)
+        else:
+            pose = None
 
+        # rgb
         image = np.array(Image.open(color_path))
-        depth = None
 
-        if self.disorted:
-            image = cv2.remap(image, self.map1x, self.map1y, cv2.INTER_LINEAR)
-
+        # depth
         if self.has_depth:
             depth_path = self.depth_paths[idx]
             depth = np.array(Image.open(depth_path)) / self.depth_scale
-            
+        else:
+            depth = None
+
+        # segments to mask
         if self.has_segmentation:
             segmentation_path = self.segmentation_paths[idx]
             segmentation = np.array(Image.open(segmentation_path))
+            mask = segmentation == 0
+            # get number of unique classes
+            # ids = np.unique(segmentation)
+        else:
+            mask = None
 
+        # apply mask
+        if mask is not None:
+            # mask image
+            image[mask] = 0
+
+        # undistort image
+        if self.disorted:
+            image = cv2.remap(image, self.map1x, self.map1y, cv2.INTER_LINEAR)
+
+        # convert to tensor
         image = (
             torch.from_numpy(image / 255.0)
             .clamp(0.0, 1.0)
             .permute(2, 0, 1)
             .to(device=self.device, dtype=self.dtype)
         )
-        
-        if pose is not None:
-            pose = torch.from_numpy(pose).to(device=self.device)
-        
+
         return image, depth, pose
 
 

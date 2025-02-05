@@ -16,3 +16,4 @@ Dataset:
     height: 1080
     depth_scale: 5000.0
     distorted: False
+    segments: [0, 1]

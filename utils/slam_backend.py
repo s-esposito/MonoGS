@@ -18,6 +18,7 @@ class BackEnd(mp.Process):
         super().__init__()
         self.config = config
         self.gaussians = None
+        self.cam_intrinsics = None
         self.pipeline_params = None
         self.opt_params = None
         self.background = None
@@ -37,6 +38,8 @@ class BackEnd(mp.Process):
         self.current_window = []
         self.initialized = not self.monocular
         self.keyframe_optimizers = None
+
+        Log("Backend initialized", tag="Backend")
 
     def set_hyperparams(self):
         self.save_results = self.config["Results"]["save_results"]
@@ -58,23 +61,25 @@ class BackEnd(mp.Process):
         self.gaussian_reset = self.config["Training"]["gaussian_reset"]
         self.size_threshold = self.config["Training"]["size_threshold"]
         self.window_size = self.config["Training"]["window_size"]
-        self.single_thread = True
-        # (
-        #     self.config["Dataset"]["single_thread"]
-        #     if "single_thread" in self.config["Dataset"]
-        #     else False
-        # )
+        # self.single_thread = True
 
     def add_next_kf(self, frame_idx, viewpoint, init=False, scale=2.0, depth_map=None):
         #
         Log(f"Adding next keyframe {frame_idx}, init: {init}, scale: {scale}")
+        
+        # TODO: cam_intrinsics here are None
+        # why are gaussians not?
+        
+        if self.cam_intrinsics is None:
+            raise Exception("Camera intrinsics are not initialized")
+        
         self.gaussians.extend_from_pcd_seq(
-            viewpoint, kf_id=frame_idx, init=init, scale=scale, depthmap=depth_map
+            viewpoint, self.cam_intrinsics, kf_id=frame_idx, init=init, scale=scale, depthmap=depth_map
         )
 
     def reset(self):
         #
-        Log("Resetting the backend")
+        Log("Resetting the backend", tag="Backend")
         self.iteration_count = 0
         self.occ_aware_visibility = {}
         self.viewpoints = {}
@@ -83,20 +88,25 @@ class BackEnd(mp.Process):
         self.keyframe_optimizers = None
 
         # remove all gaussians
-        Log("Removing all gaussians")
+        Log("Removing all gaussians", tag="Backend")
         self.gaussians.prune_points(self.gaussians.unique_kfIDs >= 0)
+        
         # remove everything from the queues
-        Log("Clearing the queues")
+        Log("Clearing the queues", tag="Backend")
         while not self.backend_queue.empty():
             self.backend_queue.get()
 
     def initialize_map(self, cur_frame_idx, viewpoint):
         #
-        Log("Initializing the map")
+        Log("Initializing the map", tag="Backend")
         for mapping_iteration in tqdm(range(self.init_itr_num)):
             self.iteration_count += 1
             render_pkg = render(
-                viewpoint, self.gaussians, self.pipeline_params, self.background
+                viewpoint,
+                self.cam_intrinsics,
+                self.gaussians,
+                self.pipeline_params,
+                self.background
             )
             (
                 image,
@@ -145,10 +155,13 @@ class BackEnd(mp.Process):
                 self.gaussians.optimizer.zero_grad(set_to_none=True)
 
         self.occ_aware_visibility[cur_frame_idx] = (n_touched > 0).long()
-        Log("Initialized map")
+        Log("Initialized map", tag="Backend")
+        
         return render_pkg
 
-    def map(self, current_window, prune=False, iters=1):
+    def optimize_map(self, current_window, prune=False, iters=1):
+        
+        # if the window is empty, return
         if len(current_window) == 0:
             return
 
@@ -162,7 +175,10 @@ class BackEnd(mp.Process):
                 continue
             random_viewpoint_stack.append(viewpoint)
 
-        for _ in range(iters):
+        disable_pbar = iters == 1
+        pbar = tqdm(range(iters), desc="Mapping", ncols=100, disable=disable_pbar)
+        for _ in pbar:
+            
             self.iteration_count += 1
             self.last_sent += 1
 
@@ -172,14 +188,22 @@ class BackEnd(mp.Process):
             radii_acm = []
             n_touched_acm = []
 
-            keyframes_opt = []
+            # keyframes_opt = []
 
-            for cam_idx in range(len(current_window)):
+            pbar_window = tqdm(range(len(current_window)), desc="Window", ncols=100, disable=True)
+            for cam_idx in pbar_window:
+                
+                # sample camera from window
                 viewpoint = viewpoint_stack[cam_idx]
-                keyframes_opt.append(viewpoint)
+                # keyframes_opt.append(viewpoint)
                 render_pkg = render(
-                    viewpoint, self.gaussians, self.pipeline_params, self.background
+                    viewpoint,
+                    self.cam_intrinsics,
+                    self.gaussians,
+                    self.pipeline_params,
+                    self.background
                 )
+                # extract render results
                 (
                     image,
                     viewspace_point_tensor,
@@ -206,11 +230,21 @@ class BackEnd(mp.Process):
                 radii_acm.append(radii)
                 n_touched_acm.append(n_touched)
 
-            for cam_idx in torch.randperm(len(random_viewpoint_stack))[:2]:
+            # Randomly sample two additional viewpoints
+            cam_idxs = torch.randperm(len(random_viewpoint_stack))[:2]
+            pbar_random = tqdm(cam_idxs, desc="Random", ncols=100, disable=True)
+            for cam_idx in pbar_random:
+                
+                # sample camera from random
                 viewpoint = random_viewpoint_stack[cam_idx]
                 render_pkg = render(
-                    viewpoint, self.gaussians, self.pipeline_params, self.background
+                    viewpoint,
+                    self.cam_intrinsics,
+                    self.gaussians,
+                    self.pipeline_params,
+                    self.background
                 )
+                # extract render results
                 (
                     image,
                     viewspace_point_tensor,
@@ -239,8 +273,10 @@ class BackEnd(mp.Process):
             isotropic_loss = torch.abs(scaling - scaling.mean(dim=1).view(-1, 1))
             loss_mapping += 10 * isotropic_loss.mean()
             loss_mapping.backward()
+            
             gaussian_split = False
-            ## Deinsifying / Pruning Gaussians
+            
+            # Deinsifying / Pruning Gaussians
             with torch.no_grad():
                 self.occ_aware_visibility = {}
                 for idx in range((len(current_window))):
@@ -251,6 +287,7 @@ class BackEnd(mp.Process):
                 # # compute the visibility of the gaussians
                 # # Only prune on the last iteration and when we have full window
                 if prune:
+                    Log("Pruning Gaussians", tag="Backend")
                     if len(current_window) == self.config["Training"]["window_size"]:
                         prune_mode = self.config["Training"]["prune_mode"]
                         prune_coviz = 3
@@ -279,7 +316,7 @@ class BackEnd(mp.Process):
                                 )
                         if not self.initialized:
                             self.initialized = True
-                            Log("Initialized SLAM")
+                            Log("Initialized SLAM", tag="Backend")
                         # # make sure we don't split the gaussians, break here.
                     return False
 
@@ -305,11 +342,11 @@ class BackEnd(mp.Process):
                     )
                     gaussian_split = True
 
-                ## Opacity reset
+                # Opacity reset
                 if (self.iteration_count % self.gaussian_reset) == 0 and (
                     not update_gaussian
                 ):
-                    Log("Resetting the opacity of non-visible Gaussians")
+                    Log("Resetting the opacity of non-visible Gaussians", tag="Backend")
                     self.gaussians.reset_opacity_nonvisible(visibility_filter_acm)
                     gaussian_split = True
 
@@ -318,12 +355,14 @@ class BackEnd(mp.Process):
                 self.gaussians.update_learning_rate(self.iteration_count)
                 self.keyframe_optimizers.step()
                 self.keyframe_optimizers.zero_grad(set_to_none=True)
+                
                 # Pose update
                 for cam_idx in range(min(frames_to_optimize, len(current_window))):
                     viewpoint = viewpoint_stack[cam_idx]
                     if viewpoint.uid == 0:
                         continue
                     update_pose(viewpoint)
+        
         return gaussian_split
 
     def color_refinement(self):
@@ -337,7 +376,11 @@ class BackEnd(mp.Process):
             )
             viewpoint_cam = self.viewpoints[viewpoint_cam_idx]
             render_pkg = render(
-                viewpoint_cam, self.gaussians, self.pipeline_params, self.background
+                viewpoint_cam,
+                self.cam_intrinsics,
+                self.gaussians,
+                self.pipeline_params,
+                self.background
             )
             image, visibility_filter, radii = (
                 render_pkg["render"],
@@ -370,42 +413,58 @@ class BackEnd(mp.Process):
         if tag is None:
             tag = "sync_backend"
 
-        msg = [tag, clone_obj(self.gaussians), self.occ_aware_visibility, keyframes]
+        msg = [tag, clone_obj(self.gaussians), self.occ_aware_visibility, keyframes, clone_obj(self.cam_intrinsics)]
         self.frontend_queue.put(msg)
 
     def run(self):
+
+        Log("Backend started", tag="Backend")
+
         while True:
+
+            # if backend queue is empty, sleep for a while
             if self.backend_queue.empty():
+
                 if self.pause:
                     time.sleep(0.01)
                     continue
+
                 if len(self.current_window) == 0:
                     time.sleep(0.01)
                     continue
 
-                if self.single_thread:
-                    time.sleep(0.01)
-                    continue
-                self.map(self.current_window)
+                # if self.single_thread:
+                time.sleep(0.01)
+                # continue
+
+                self.optimize_map(self.current_window, prune=False, iters=1)
                 if self.last_sent >= 10:
-                    self.map(self.current_window, prune=True, iters=10)
+                    self.optimize_map(self.current_window, prune=True, iters=10)
                     self.push_to_frontend()
+
             else:
+
                 data = self.backend_queue.get()
+
                 if data[0] == "stop":
-                    Log("Stopping the backend")
+                    Log("Stopping the backend", tag="Backend")
                     break
+
                 elif data[0] == "pause":
                     self.pause = True
-                    Log("Paused the backend")
+                    Log("Paused the backend", tag="Backend")
+
                 elif data[0] == "unpause":
                     self.pause = False
-                    Log("Unpaused the backend")
+                    Log("Unpaused the backend", tag="Backend")
+
                 elif data[0] == "color_refinement":
                     self.color_refinement()
                     self.push_to_frontend()
-                    Log("Color refinement done")
+                    Log("Color refinement done", tag="Backend")
+
                 elif data[0] == "init":
+                    
                     cur_frame_idx = data[1]
                     viewpoint = data[2]
                     depth_map = data[3]
@@ -413,13 +472,17 @@ class BackEnd(mp.Process):
 
                     self.viewpoints[cur_frame_idx] = viewpoint
                     self.add_next_kf(
-                        cur_frame_idx, viewpoint, depth_map=depth_map, init=True
+                        cur_frame_idx,
+                        viewpoint,
+                        depth_map=depth_map,
+                        init=True
                     )
                     self.initialize_map(cur_frame_idx, viewpoint)
                     self.push_to_frontend("init")
-                    Log("Initialization done")
+                    Log("Initialization done", tag="Backend")
 
                 elif data[0] == "keyframe":
+
                     cur_frame_idx = data[1]
                     viewpoint = data[2]
                     current_window = data[3]
@@ -427,7 +490,11 @@ class BackEnd(mp.Process):
 
                     self.viewpoints[cur_frame_idx] = viewpoint
                     self.current_window = current_window
-                    self.add_next_kf(cur_frame_idx, viewpoint, depth_map=depth_map)
+                    self.add_next_kf(
+                        cur_frame_idx,
+                        viewpoint,
+                        depth_map=depth_map
+                    )
 
                     opt_params = []
                     frames_to_optimize = self.config["Training"]["pose_window"]
@@ -444,9 +511,15 @@ class BackEnd(mp.Process):
                             Log("Performing initial BA for initialization")
                         else:
                             iter_per_kf = self.mapping_itr_num
+                    
+                    # iterate over the keyframes in the window
                     for cam_idx in range(len(self.current_window)):
+
                         if self.current_window[cam_idx] == 0:
+                            # TODO: why?
                             continue
+
+                        # get viewpoint
                         viewpoint = self.viewpoints[current_window[cam_idx]]
                         if cam_idx < frames_to_optimize:
                             opt_params.append(
@@ -483,13 +556,22 @@ class BackEnd(mp.Process):
                         )
                     self.keyframe_optimizers = torch.optim.Adam(opt_params)
 
-                    self.map(self.current_window, iters=iter_per_kf)
-                    self.map(self.current_window, prune=True)
+                    self.optimize_map(self.current_window, prune=False, iters=iter_per_kf)
+                    self.optimize_map(self.current_window, prune=True, iters=1)
                     self.push_to_frontend("keyframe")
+
+                    Log("Keyframe done", tag="Backend")
+
                 else:
+
                     raise Exception("Unprocessed data", data)
+
+        # empty the queues
         while not self.backend_queue.empty():
             self.backend_queue.get()
         while not self.frontend_queue.empty():
             self.frontend_queue.get()
+
+        Log("Backend done", tag="Backend")
+
         return
