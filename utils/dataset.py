@@ -19,6 +19,35 @@ except Exception:
     pass
 
 
+class KubricParser:
+    def __init__(self, input_folder):
+        self.input_folder = input_folder
+        self.load_poses(self.input_folder, frame_rate=24)
+        self.n_img = len(self.color_paths)
+
+        # this dataset has no ground truth trajectory info
+
+    def load_poses(self, datapath, frame_rate=-1):
+
+        self.color_paths, self.poses, self.depth_paths, self.frames = [], [], [], []
+        self.segmentation_paths = []
+
+        # list all files in datapath/rgb
+        self.color_paths = sorted(glob.glob(f"{datapath}/rgba/*.png"))
+        # sort
+        self.color_paths.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
+
+        # list all files in datapath/depth (depth_00000.tiff)
+        self.depth_paths = sorted(glob.glob(f"{datapath}/depth/*.tiff"))
+        # sort
+        self.depth_paths.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
+        
+        # list all files in datapath/segmentation
+        self.segmentation_paths = sorted(glob.glob(f"{datapath}/segmentation/*.png"))
+        # sort
+        self.segmentation_paths.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
+
+
 class DavisParser:
     def __init__(self, input_folder):
         self.input_folder = input_folder
@@ -323,7 +352,7 @@ class MonocularDataset(BaseDataset):
             pose = None
 
         # rgb
-        image = np.array(Image.open(color_path))
+        image = np.array(Image.open(color_path))[..., :3]  # remove alpha channel
 
         # depth
         if self.has_depth:
@@ -343,9 +372,9 @@ class MonocularDataset(BaseDataset):
             mask = None
 
         # apply mask
-        if mask is not None:
-            # mask image
-            image[mask] = 0
+        #if mask is not None:
+        #    # mask image
+        #    image[mask] = 0
 
         # undistort image
         if self.disorted:
@@ -477,6 +506,27 @@ class StereoDataset(BaseDataset):
         return image, depth, pose
 
 
+class KubricDataset(MonocularDataset):
+    def __init__(self, args, path, config):
+        super().__init__(args, path, config)
+        dataset_path = config["Dataset"]["dataset_path"]
+        parser = KubricParser(dataset_path)
+        self.num_imgs = parser.n_img
+        self.color_paths = parser.color_paths
+        self.depth_paths = parser.depth_paths
+        self.segmentation_paths = parser.segmentation_paths
+        self.poses = parser.poses
+        #
+        self.has_segmentation = True
+        self.has_depth = True
+        self.has_traj = False  # TODO: load trajectory
+        #
+        print(f"Color paths lenght: {len(self.color_paths)}")
+        print(f"Depth paths lenght: {len(self.depth_paths)}")
+        print(f"Segmentation paths lenght: {len(self.segmentation_paths)}")
+        print(f"Poses lenght: {len(self.poses)}")
+
+
 class DavisDataset(MonocularDataset):
     def __init__(self, args, path, config):
         super().__init__(args, path, config)
@@ -508,6 +558,7 @@ class TUMDataset(MonocularDataset):
         self.depth_paths = parser.depth_paths
         self.poses = parser.poses
         print(f"Color paths lenght: {len(self.color_paths)}")
+        print(f"Had depth", self.has_depth)
         print(f"Depth paths lenght: {len(self.depth_paths)}")
         print(f"Poses lenght: {len(self.poses)}")
 
@@ -637,5 +688,7 @@ def load_dataset(args, path, config):
         return RealsenseDataset(args, path, config)
     elif config["Dataset"]["type"] == "davis":
         return DavisDataset(args, path, config)
+    elif config["Dataset"]["type"] == "kubric":
+        return KubricDataset(args, path, config)
     else:
         raise ValueError("Unknown dataset type")

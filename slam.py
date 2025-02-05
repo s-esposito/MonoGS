@@ -217,12 +217,12 @@ class SLAM:
 
         backend_queue.put(["stop"])
         backend_process.join()
-
         Log("Backend stopped and joined the main thread")
-        if self.use_gui:
-            q_main2vis.put(gui_utils.GaussianPacket(finish=True))
-            gui_process.join()
-            Log("GUI Stopped and joined the main thread")
+        
+        # if self.use_gui:
+        #     q_main2vis.put(gui_utils.GaussianPacket(finish=True))
+        #     gui_process.join()
+        #     Log("GUI Stopped and joined the main thread")
 
 
 if __name__ == "__main__":

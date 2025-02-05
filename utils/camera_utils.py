@@ -104,6 +104,7 @@ class CameraExtrinsics(nn.Module):
             self.T_gt = gt_T[:3, 3]
 
         self.original_image = color
+
         self.depth = depth
         self.grad_mask = None
 

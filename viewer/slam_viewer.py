@@ -61,8 +61,8 @@ class Viewer:
         self.kf_window = None
         self.render_img = None
 
-        self.width_3d = 1920
-        self.height_3d = 1080
+        self.width_3d = self.window_w
+        self.height_3d = self.window_h
 
         if params_gui is not None:
             self.background = params_gui.background
@@ -72,8 +72,8 @@ class Viewer:
             self.q_main2vis = params_gui.q_main2vis
             self.q_vis2main = params_gui.q_vis2main
             self.pipe = params_gui.pipe
-            self.width_3d = params_gui.width_data
-            self.height_3d = params_gui.height_data
+            # self.width_3d = params_gui.width_data
+            # self.height_3d = params_gui.height_data
 
         Log(f"Viewer resolution {self.window_w}x{self.window_h}", tag="GUI")
         Log(f"Data resolution {self.width_3d}x{self.height_3d}", tag="GUI")

@@ -196,18 +196,20 @@ class FrontEnd(mp.Process):
                 converged = update_pose(viewpoint, converged_threshold=1e-4)
 
             if tracking_itr % 10 == 0:
+                gtdepth = viewpoint.depth
+                if viewpoint.depth is None:
+                    gtdepth = np.zeros(
+                        (self.cam_intrinsics.height, self.cam_intrinsics.width)
+                    )
+                else:
+                    # normalize the depth
+                    maxdepth = np.max(gtdepth)
+                    gtdepth = gtdepth / (maxdepth + 1e-6)
                 self.q_main2vis.put(
                     gui_utils.GaussianPacket(
                         current_frame=viewpoint,
-                        # cam_intrinsics=clone_obj(self.cam_intrinsics),
                         gtcolor=viewpoint.original_image,
-                        gtdepth=(
-                            viewpoint.depth
-                            if not self.monocular
-                            else np.zeros(
-                                (self.cam_intrinsics.height, self.cam_intrinsics.width)
-                            )
-                        ),
+                        gtdepth=gtdepth
                     )
                 )
             if converged:
