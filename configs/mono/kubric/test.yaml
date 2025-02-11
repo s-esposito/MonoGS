@@ -3,17 +3,18 @@ inherit_from: "configs/mono/kubric/base_config.yaml"
 Dataset:
   dataset_path: "datasets/kubric/test"
   Calibration:
-    fx: 350.0
-    fy: 350.0
-    cx: 128.0
-    cy: 128.0
+    fx: 560.0  # focal lenght (35mm) x image width (256px) / sensor width (32mm)
+    fy: 560.0
+    cx: 256.0
+    cy: 256.0
     k1: 0.0
     k2: 0.0
     p1: 0.0
     p2: 0.0
     k3: 0.0
-    width: 256
-    height: 256
+    width: 512
+    height: 512
+    use_depth: True
     depth_scale: 1.0
     distorted: False
     segments: [0, 1]

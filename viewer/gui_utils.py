@@ -107,7 +107,8 @@ class GaussianPacket:
     def __init__(
         self,
         gaussians=None,
-        keyframe=None,
+        # gt_keyframes=None,
+        # keyframe=None,
         cam_intrinsics=None,
         current_frame=None,
         gtcolor=None,
@@ -136,15 +137,15 @@ class GaussianPacket:
 
         # intrinisics
         self.cam_intrinsics = cam_intrinsics  # CameraIntrinsics
-        
-        self.keyframe = keyframe  # CameraExtrinsics
+
+        # self.gt_keyframes = gt_keyframes  # list of CameraExtrinsics
         self.current_frame = current_frame  # CameraExtrinsics
-        self.keyframes = keyframes  # list of CameraExtrinsics
+        self.keyframes = keyframes  # list of CameraExtrinsics (window)
 
         self.gtcolor = self.resize_img(gtcolor, 320)
         self.gtdepth = self.resize_img(gtdepth, 320)
         self.gtnormal = self.resize_img(gtnormal, 320)
-        
+
         self.finish = finish
         self.kf_window = kf_window
 

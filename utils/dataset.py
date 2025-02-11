@@ -1,12 +1,13 @@
 import csv
 import glob
 import os
-
+import json
 import cv2
 import numpy as np
 import torch
 import trimesh
 from PIL import Image
+from scipy.spatial.transform import Rotation
 import itertools
 from io import StringIO
 
@@ -29,8 +30,37 @@ class KubricParser:
 
     def load_poses(self, datapath, frame_rate=-1):
 
-        self.color_paths, self.poses, self.depth_paths, self.frames = [], [], [], []
-        self.segmentation_paths = []
+        # list all poses
+        self.poses = []
+        
+        # open datapath/metadata.json as dict
+        json_path = os.path.join(datapath, "metadata.json")
+        with open(json_path, "r") as f:
+            metadata = json.load(f)
+        
+        metadata = metadata["camera"]
+        positions = metadata["positions"]
+        quaternions = metadata["quaternions"]
+        for position, quat in zip(positions, quaternions):
+            # Convert quaternion from [w, x, y, z] to [x, y, z, w] for scipy
+            quat_scipy = np.concatenate([quat[1:], quat[:1]])
+            
+            # Compute the rotation matrix
+            rotation_matrix = Rotation.from_quat(quat_scipy).as_matrix()
+            
+            # Construct the transformation matrix
+            T = np.eye(4)
+            T[:3, :3] = rotation_matrix
+            T[:3, 3] = position
+            # rot = transform.Rotation.from_quat(quaternion)
+            # T = np.eye(4)
+            # T[:3, :3] = rot.as_matrix()
+            # T[:3, 3] = position
+            # T = trimesh.transformations.quaternion_matrix(np.roll(quaternion, 1))
+            # T = trimesh.transformations.quaternion_matrix(quaternion)
+            # T[:3, 3] = position
+            self.poses += [T]
+            # self.poses += [np.linalg.inv(T)]
 
         # list all files in datapath/rgb
         self.color_paths = sorted(glob.glob(f"{datapath}/rgba/*.png"))
@@ -41,7 +71,7 @@ class KubricParser:
         self.depth_paths = sorted(glob.glob(f"{datapath}/depth/*.tiff"))
         # sort
         self.depth_paths.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
-        
+
         # list all files in datapath/segmentation
         self.segmentation_paths = sorted(glob.glob(f"{datapath}/segmentation/*.png"))
         # sort
@@ -54,12 +84,13 @@ class DavisParser:
         self.load_poses(self.input_folder, frame_rate=24)
         self.n_img = len(self.color_paths)
 
-        # this dataset has no ground truth trajectory info
-
     def load_poses(self, datapath, frame_rate=-1):
 
-        self.color_paths, self.poses, self.depth_paths, self.frames = [], [], [], []
-        self.segmentation_paths = []
+        # list all poses
+        self.poses = []  # this dataset has no ground truth trajectory info
+
+        # list all files in datapath/depth
+        self.depth_paths = []
 
         # list all files in datapath/rgb
         self.color_paths = sorted(glob.glob(f"{datapath}/rgb/*.jpg"))
@@ -70,25 +101,6 @@ class DavisParser:
         self.segmentation_paths = sorted(glob.glob(f"{datapath}/segmentation/*.png"))
         # sort
         self.segmentation_paths.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
-
-        # for ix in indicies:
-        #     (i, j, k) = associations[ix]
-        #     self.color_paths += [os.path.join(datapath, image_data[i, 1])]
-        #     self.depth_paths += [os.path.join(datapath, depth_data[j, 1])]
-
-        #     quat = pose_vecs[k][4:]
-        #     trans = pose_vecs[k][1:4]
-        #     T = trimesh.transformations.quaternion_matrix(np.roll(quat, 1))
-        #     T[:3, 3] = trans
-        #     self.poses += [np.linalg.inv(T)]
-
-        #     frame = {
-        #         "file_path": str(os.path.join(datapath, image_data[i, 1])),
-        #         "depth_path": str(os.path.join(datapath, depth_data[j, 1])),
-        #         "transform_matrix": (np.linalg.inv(T)).tolist(),
-        #     }
-
-        #     self.frames.append(frame)
 
 
 class ReplicaParser:
@@ -104,20 +116,20 @@ class ReplicaParser:
         with open(path, "r") as f:
             lines = f.readlines()
 
-        frames = []
+        # frames = []
         for i in range(self.n_img):
             line = lines[i]
             pose = np.array(list(map(float, line.split()))).reshape(4, 4)
             pose = np.linalg.inv(pose)
             self.poses.append(pose)
-            frame = {
-                "file_path": self.color_paths[i],
-                "depth_path": self.depth_paths[i],
-                "transform_matrix": pose.tolist(),
-            }
+            # frame = {
+            #     "file_path": self.color_paths[i],
+            #     "depth_path": self.depth_paths[i],
+            #     "transform_matrix": pose.tolist(),
+            # }
 
-            frames.append(frame)
-        self.frames = frames
+            # frames.append(frame)
+        # self.frames = frames
 
 
 class TUMParser:
@@ -178,7 +190,10 @@ class TUMParser:
             if t1 - t0 > 1.0 / frame_rate:
                 indicies += [i]
 
-        self.color_paths, self.poses, self.depth_paths, self.frames = [], [], [], []
+        self.color_paths = []
+        self.poses = []
+        self.depth_paths = []
+        # self.frames = []
 
         for ix in indicies:
             (i, j, k) = associations[ix]
@@ -191,13 +206,13 @@ class TUMParser:
             T[:3, 3] = trans
             self.poses += [np.linalg.inv(T)]
 
-            frame = {
-                "file_path": str(os.path.join(datapath, image_data[i, 1])),
-                "depth_path": str(os.path.join(datapath, depth_data[j, 1])),
-                "transform_matrix": (np.linalg.inv(T)).tolist(),
-            }
+            # frame = {
+            #     "file_path": str(os.path.join(datapath, image_data[i, 1])),
+            #     "depth_path": str(os.path.join(datapath, depth_data[j, 1])),
+            #     "transform_matrix": (np.linalg.inv(T)).tolist(),
+            # }
 
-            self.frames.append(frame)
+            # self.frames.append(frame)
 
 
 class EuRoCParser:
@@ -246,7 +261,7 @@ class EuRoCParser:
         pose_ts = data[:, 0]
         pose_indices = self.associate(pose_ts)
 
-        frames = []
+        # frames = []
         for i in range(self.n_img):
             trans = data[pose_indices[i], 1:4]
             quat = data[pose_indices[i], 4:8]
@@ -258,13 +273,13 @@ class EuRoCParser:
 
             self.poses += [np.linalg.inv(T_w_c)]
 
-            frame = {
-                "file_path": self.color_paths[i],
-                "transform_matrix": (np.linalg.inv(T_w_c)).tolist(),
-            }
+            # frame = {
+            #     "file_path": self.color_paths[i],
+            #     "transform_matrix": (np.linalg.inv(T_w_c)).tolist(),
+            # }
 
-            frames.append(frame)
-        self.frames = frames
+            # frames.append(frame)
+        # self.frames = frames
 
 
 class BaseDataset(torch.utils.data.Dataset):
@@ -299,6 +314,7 @@ class MonocularDataset(BaseDataset):
         self.K = np.array(
             [[self.fx, 0.0, self.cx], [0.0, self.fy, self.cy], [0.0, 0.0, 1.0]]
         )
+        self.use_depth = calibration.get("use_depth", False)
         # distortion parameters
         self.disorted = calibration["distorted"]
         self.dist_coeffs = np.array(
@@ -328,18 +344,34 @@ class MonocularDataset(BaseDataset):
         self.has_traj = True
         self.poses = []
         # depth parameters
-        self.has_depth = True if "depth_scale" in calibration.keys() else False
+        self.has_depth = False
         self.depth_paths = []
-        self.depth_scale = calibration["depth_scale"] if self.has_depth else None
+        self.depth_scale = calibration.get(
+            "depth_scale", None
+        )
 
-        # Default scene scale
-        nerf_normalization_radius = 5
-        self.scene_info = {
-            "nerf_normalization": {
-                "radius": nerf_normalization_radius,
-                "translation": np.zeros(3),
-            },
-        }
+        # # Default scene scale
+        # nerf_normalization_radius = 5
+        # self.scene_info = {
+        #     "nerf_normalization": {
+        #         "radius": nerf_normalization_radius,
+        #         "translation": np.zeros(3),
+        #     },
+        # }
+        
+    def start_gt_traj_from_identity(self):
+        # get first pose
+        first_pose = self.poses[0]
+        
+        # compute all other poses as relative to the first pose
+        relative_poses = []
+        for pose in self.poses[1:]:
+            relative_poses.append(np.dot(np.linalg.inv(first_pose), pose))
+        
+        # recompute absolute poses from relative poses, now setting the first pose to identity
+        self.poses = [np.eye(4)]
+        for pose in relative_poses:
+            self.poses.append(pose)
 
     def __getitem__(self, idx):
         color_path = self.color_paths[idx]
@@ -355,7 +387,7 @@ class MonocularDataset(BaseDataset):
         image = np.array(Image.open(color_path))[..., :3]  # remove alpha channel
 
         # depth
-        if self.has_depth:
+        if self.has_depth and self.use_depth:
             depth_path = self.depth_paths[idx]
             depth = np.array(Image.open(depth_path)) / self.depth_scale
         else:
@@ -365,16 +397,18 @@ class MonocularDataset(BaseDataset):
         if self.has_segmentation:
             segmentation_path = self.segmentation_paths[idx]
             segmentation = np.array(Image.open(segmentation_path))
-            mask = segmentation == 0
+            # mask = segmentation == 0
             # get number of unique classes
             # ids = np.unique(segmentation)
         else:
-            mask = None
+            segmentation = None
+        # else:
+            # mask = None
 
-        # apply mask
-        #if mask is not None:
-        #    # mask image
-        #    image[mask] = 0
+        # # apply mask
+        # if mask is not None:
+        #     # mask image
+        #     image[~mask] = 0
 
         # undistort image
         if self.disorted:
@@ -387,6 +421,23 @@ class MonocularDataset(BaseDataset):
             .permute(2, 0, 1)
             .to(device=self.device, dtype=self.dtype)
         )
+        
+        print(f"Image shape: {image.shape}")
+        
+        if depth is not None:
+            print(f"Depth shape: {depth.shape}, min: {depth.min()}, max: {depth.max()}")
+        else:
+            print(f"Depth shape: None")
+            
+        if segmentation is not None:
+            print(f"Segmentation shape: {segmentation.shape}, unique classes: {np.unique(segmentation)}")
+        else:
+            print(f"Segmentation shape: None")    
+            
+        if pose is not None:
+            print(f"Pose shape: {pose.shape}")
+        else:
+            print(f"Pose shape: None")
 
         return image, depth, pose
 
@@ -516,10 +567,11 @@ class KubricDataset(MonocularDataset):
         self.depth_paths = parser.depth_paths
         self.segmentation_paths = parser.segmentation_paths
         self.poses = parser.poses
+        # self.start_gt_traj_from_identity()
         #
         self.has_segmentation = True
         self.has_depth = True
-        self.has_traj = False  # TODO: load trajectory
+        self.has_traj = True
         #
         print(f"Color paths lenght: {len(self.color_paths)}")
         print(f"Depth paths lenght: {len(self.depth_paths)}")
@@ -537,6 +589,7 @@ class DavisDataset(MonocularDataset):
         self.depth_paths = parser.depth_paths
         self.segmentation_paths = parser.segmentation_paths
         self.poses = parser.poses
+        # self.start_gt_traj_from_identity()
         #
         self.has_segmentation = True
         self.has_depth = False
@@ -556,9 +609,11 @@ class TUMDataset(MonocularDataset):
         self.num_imgs = parser.n_img
         self.color_paths = parser.color_paths
         self.depth_paths = parser.depth_paths
+        if len(self.depth_paths) > 0:
+            self.has_depth = True
         self.poses = parser.poses
+        # self.start_gt_traj_from_identity()
         print(f"Color paths lenght: {len(self.color_paths)}")
-        print(f"Had depth", self.has_depth)
         print(f"Depth paths lenght: {len(self.depth_paths)}")
         print(f"Poses lenght: {len(self.poses)}")
 
@@ -571,7 +626,10 @@ class ReplicaDataset(MonocularDataset):
         self.num_imgs = parser.n_img
         self.color_paths = parser.color_paths
         self.depth_paths = parser.depth_paths
+        if len(self.depth_paths) > 0:
+            self.has_depth = True
         self.poses = parser.poses
+        # self.start_gt_traj_from_identity()
 
 
 class EurocDataset(StereoDataset):
@@ -647,6 +705,7 @@ class RealsenseDataset(BaseDataset):
             self.depth_intrinsics = self.depth_profile.get_intrinsics()
 
     def __getitem__(self, idx):
+        
         pose = torch.eye(4, device=self.device, dtype=self.dtype)
         depth = None
 

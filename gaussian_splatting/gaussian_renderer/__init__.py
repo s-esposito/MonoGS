@@ -29,7 +29,7 @@ from gaussian_splatting.utils.sh_utils import eval_sh
 def render(
     viewpoint_camera: CameraExtrinsics,
     cam_intrinsics: CameraIntrinsics,
-    pc: GaussianModel,
+    gaussians: GaussianModel,
     pipe,
     bg_color: torch.Tensor,
     scaling_modifier=1.0,
@@ -43,12 +43,12 @@ def render(
     """
 
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    if pc.get_xyz.shape[0] == 0:
+    if gaussians.get_xyz.shape[0] == 0:
         return None
 
     screenspace_points = (
         torch.zeros_like(
-            pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda"
+            gaussians.get_xyz, dtype=gaussians.get_xyz.dtype, requires_grad=True, device="cuda"
         )
         + 0
     )
@@ -85,7 +85,7 @@ def render(
         # projmatrix_raw=viewpoint_camera.projection_matrix,
         projmatrix=full_proj_transform,
         projmatrix_raw=projection_matrix,
-        sh_degree=pc.active_sh_degree,
+        sh_degree=gaussians.active_sh_degree,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=False,
@@ -93,9 +93,9 @@ def render(
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    means3D = pc.get_xyz
+    means3D = gaussians.get_xyz
     means2D = screenspace_points
-    opacity = pc.get_opacity
+    opacity = gaussians.get_opacity
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
@@ -103,14 +103,14 @@ def render(
     rotations = None
     cov3D_precomp = None
     if pipe.compute_cov3D_python:
-        cov3D_precomp = pc.get_covariance(scaling_modifier)
+        cov3D_precomp = gaussians.get_covariance(scaling_modifier)
     else:
         # check if the covariance is isotropic
-        if pc.get_scaling.shape[-1] == 1:
-            scales = pc.get_scaling.repeat(1, 3)
+        if gaussians.get_scaling.shape[-1] == 1:
+            scales = gaussians.get_scaling.repeat(1, 3)
         else:
-            scales = pc.get_scaling
-        rotations = pc.get_rotation
+            scales = gaussians.get_scaling
+        rotations = gaussians.get_rotation
 
     # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
     # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
@@ -118,17 +118,17 @@ def render(
     colors_precomp = None
     if colors_precomp is None:
         if pipe.convert_SHs_python:
-            shs_view = pc.get_features.transpose(1, 2).view(
-                -1, 3, (pc.max_sh_degree + 1) ** 2
+            shs_view = gaussians.get_features.transpose(1, 2).view(
+                -1, 3, (gaussians.max_sh_degree + 1) ** 2
             )
-            dir_pp = pc.get_xyz - viewpoint_camera.camera_center.repeat(
-                pc.get_features.shape[0], 1
+            dir_pp = gaussians.get_xyz - viewpoint_camera.camera_center.repeat(
+                gaussians.get_features.shape[0], 1
             )
             dir_pp_normalized = dir_pp / dir_pp.norm(dim=1, keepdim=True)
-            sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
+            sh2rgb = eval_sh(gaussians.active_sh_degree, shs_view, dir_pp_normalized)
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
         else:
-            shs = pc.get_features
+            shs = gaussians.get_features
     else:
         colors_precomp = override_color
 

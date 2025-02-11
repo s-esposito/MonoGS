@@ -104,7 +104,9 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
-    def create_pcd_from_image(self, cam, cam_intrinsics, init=False, scale=2.0, depthmap=None):
+    def create_pcd_from_image(
+        self, cam, cam_intrinsics, init=False, scale=2.0, depthmap=None
+    ):
         #
         Log("Creating PCD from image", tag="Backend")
 
@@ -130,9 +132,13 @@ class GaussianModel:
             rgb = o3d.geometry.Image(rgb_raw.astype(np.uint8))
             depth = o3d.geometry.Image(depth_raw.astype(np.float32))
 
-        return self.create_pcd_from_image_and_depth(cam, cam_intrinsics, rgb, depth, init)
+        return self.create_pcd_from_image_and_depth(
+            cam, cam_intrinsics, rgb, depth, init
+        )
 
-    def create_pcd_from_image_and_depth(self, cam, cam_intrinsics, rgb, depth, init=False):
+    def create_pcd_from_image_and_depth(
+        self, cam, cam_intrinsics, rgb, depth, init=False
+    ):
         #
         # Log("Creating PCD from image and depth")
         if init:
@@ -265,7 +271,9 @@ class GaussianModel:
         self, cam, cam_intrinsics, kf_id=-1, init=False, scale=2.0, depthmap=None
     ):
         fused_point_cloud, features, scales, rots, opacities = (
-            self.create_pcd_from_image(cam, cam_intrinsics, init, scale=scale, depthmap=depthmap)
+            self.create_pcd_from_image(
+                cam, cam_intrinsics, init, scale=scale, depthmap=depthmap
+            )
         )
         self.extend_from_pcd(
             fused_point_cloud, features, scales, rots, opacities, kf_id

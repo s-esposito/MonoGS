@@ -49,20 +49,18 @@ class SLAM:
 
         model_params.sh_degree = 3 if self.use_spherical_harmonics else 0
 
-        # 
+        #
         self.gaussians = GaussianModel(model_params.sh_degree, config=self.config)
         self.gaussians.init_lr(6.0)
         self.gaussians.training_setup(opt_params)
-                
+
         #
         self.dataset = load_dataset(
             model_params, model_params.source_path, config=config
         )
-        
-        # 
-        self.cam_intrinsics = CameraIntrinsics.init_from_dataset(
-            self.dataset
-        )
+
+        #
+        self.cam_intrinsics = CameraIntrinsics.init_from_dataset(self.dataset)
 
         bg_color = [0, 0, 0]
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -100,6 +98,18 @@ class SLAM:
         # record the start time
         start.record()
 
+        # start frontend process
+        self.frontend = FrontEnd(self.config)
+        self.frontend.dataset = self.dataset
+        self.frontend.background = self.background
+        self.frontend.pipeline_params = self.pipeline_params
+        self.frontend.frontend_queue = frontend_queue
+        self.frontend.backend_queue = backend_queue
+        self.frontend.q_main2vis = q_main2vis
+        self.frontend.q_vis2main = q_vis2main
+        self.frontend.set_hyperparams()
+        
+        
         # start backend process
         self.backend = BackEnd(self.config)
         self.backend.gaussians = self.gaussians
@@ -112,25 +122,20 @@ class SLAM:
         self.backend.backend_queue = backend_queue
         self.backend.live_mode = self.live_mode
         self.backend.set_hyperparams()
+        
+        # start the backend process
         backend_process = mp.Process(target=self.backend.run)  # separate process
         backend_process.start()
-
-        # start frontend process
-        self.frontend = FrontEnd(self.config)
-        self.frontend.dataset = self.dataset
-        self.frontend.background = self.background
-        self.frontend.pipeline_params = self.pipeline_params
-        self.frontend.frontend_queue = frontend_queue
-        self.frontend.backend_queue = backend_queue
-        self.frontend.q_main2vis = q_main2vis
-        self.frontend.q_vis2main = q_vis2main
-        self.frontend.set_hyperparams()
+        
+        # start the frontend process
         self.frontend.run()  # same process
-        # backend_queue.put(["pause"])
 
         # record the end time
         end.record()
         torch.cuda.synchronize()
+        
+        backend_process.join()
+        Log("Backend stopped and joined the main thread")
 
         # # empty the frontend queue
         # N_frames = len(self.frontend.cameras)
@@ -215,10 +220,6 @@ class SLAM:
             wandb.log({"Metrics": metrics_table})
             save_gaussians(self.gaussians, self.save_dir, "final_after_opt", final=True)
 
-        backend_queue.put(["stop"])
-        backend_process.join()
-        Log("Backend stopped and joined the main thread")
-        
         # if self.use_gui:
         #     q_main2vis.put(gui_utils.GaussianPacket(finish=True))
         #     gui_process.join()
@@ -228,7 +229,7 @@ class SLAM:
 if __name__ == "__main__":
 
     # Set up command line argument parser
-    parser = ArgumentParser(description="Training script parameters")
+    parser = ArgumentParser(description="Training parameters")
     parser.add_argument("--config", type=str)
     parser.add_argument("--eval", action="store_true")
 

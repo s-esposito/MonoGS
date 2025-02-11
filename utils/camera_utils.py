@@ -59,7 +59,7 @@ class CameraIntrinsics(nn.Module):
             dataset.width,
             device=dataset.device,
         )
-        
+
     @staticmethod
     def init_from_gui(
         fx,
@@ -82,26 +82,30 @@ class CameraIntrinsics(nn.Module):
 class CameraExtrinsics(nn.Module):
     def __init__(
         self,
-        uid,
+        frame_idx,
         color,
         depth,
-        gt_T=None,
+        gt_pose=None,
         device="cuda:0",
     ):
         super(CameraExtrinsics, self).__init__()
-        self.uid = uid
+        self.frame_idx = frame_idx
         self.device = device
 
         T = torch.eye(4, device=device)
         self.R = T[:3, :3]
         self.T = T[:3, 3]
 
-        if gt_T is None:
+        if gt_pose is None:
             self.R_gt = None
             self.T_gt = None
         else:
-            self.R_gt = gt_T[:3, :3]
-            self.T_gt = gt_T[:3, 3]
+            self.R_gt = gt_pose[:3, :3]
+            self.T_gt = gt_pose[:3, 3]
+            
+        # if frame_idx == 0 and gt_pose is not None:
+        #     self.R = self.R_gt
+        #     self.T = self.T_gt
 
         self.original_image = color
 
@@ -127,27 +131,27 @@ class CameraExtrinsics(nn.Module):
     @staticmethod
     def init_from_dataset(
         dataset,
-        idx,
+        frame_idx,
     ):
-        gt_color, gt_depth, gt_pose = dataset[idx]
+        gt_color, gt_depth, gt_pose = dataset[frame_idx]
         return CameraExtrinsics(
-            idx,
+            frame_idx,
             gt_color,
             gt_depth,
-            gt_T=gt_pose,
+            gt_pose=gt_pose,
             device=dataset.device,
         )
 
     @staticmethod
     def init_from_gui(
-        uid,
+        frame_idx,
         T,
     ):
         return CameraExtrinsics(
-            uid,
+            frame_idx,
             color=None,
             depth=None,
-            gt_T=T,
+            gt_pose=T,
         )
 
     @property

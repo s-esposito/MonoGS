@@ -20,6 +20,7 @@ class FrontEnd(mp.Process):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        self.dataset = None
         self.background = None
         self.pipeline_params = None
         self.frontend_queue = None
@@ -34,16 +35,16 @@ class FrontEnd(mp.Process):
         self.occ_aware_visibility = {}
         self.current_window = []
 
-        self.reset = True
+        # self.reset = True
         self.requested_init = False
-        self.requested_keyframe = 0
+        self.requested_keyframe = False
         self.use_every_n_frames = 1
 
         self.gaussians = None  # GaussianModel
         self.cameras = dict()  # dict of CameraExtrinsics
         self.cam_intrinsics = None  # CameraIntrinsics
         self.device = "cuda:0"
-        self.pause = False
+        # self.pause = False
 
         Log("Frontend Initialized.", tag="Frontend")
 
@@ -56,13 +57,13 @@ class FrontEnd(mp.Process):
         self.tracking_itr_num = self.config["Training"]["tracking_itr_num"]
         self.kf_interval = self.config["Training"]["kf_interval"]
         self.window_size = self.config["Training"]["window_size"]
-        self.single_thread = self.config["Training"]["single_thread"]
+        #  self.single_thread = self.config["Training"]["single_thread"]
 
     def add_new_keyframe(self, cur_frame_idx, depth=None, opacity=None, init=False):
         rgb_boundary_threshold = self.config["Training"]["rgb_boundary_threshold"]
         self.kf_indices.append(cur_frame_idx)
-        viewpoint = self.cameras[cur_frame_idx]
-        gt_img = viewpoint.original_image.cuda()
+        cur_viewpoint = self.cameras[cur_frame_idx]
+        gt_img = cur_viewpoint.original_image.cuda()
         valid_rgb = (gt_img.sum(dim=0) > rgb_boundary_threshold)[None]
         if self.monocular:
             if depth is None:
@@ -107,111 +108,112 @@ class FrontEnd(mp.Process):
                 initial_depth[~valid_rgb] = 0  # Ignore the invalid rgb pixels
             return initial_depth.cpu().numpy()[0]
         # use the observed depth
-        initial_depth = torch.from_numpy(viewpoint.depth).unsqueeze(0)
+        initial_depth = torch.from_numpy(cur_viewpoint.depth).unsqueeze(0)
         initial_depth[~valid_rgb.cpu()] = 0  # Ignore the invalid rgb pixels
         return initial_depth[0].numpy()
 
-    def initialize(self, cur_frame_idx, viewpoint):
+    def initialize(self, cur_frame_idx, cur_viewpoint):
+        Log("Initializing frontend.", tag="Frontend")
         self.initialized = not self.monocular
         self.kf_indices = []
         self.iteration_count = 0
         self.occ_aware_visibility = {}
         self.current_window = []
-        
-        # remove everything from the queues
-        while not self.backend_queue.empty():
-            self.backend_queue.get()
+
+        # # remove everything from the queues
+        # while not self.backend_queue.empty():
+        #     self.backend_queue.get()
 
         # Initialise the frame at the ground truth pose
-        # TODO: weird???
-        # # viewpoint.update_RT(viewpoint.R_gt, viewpoint.T_gt)
+        cur_viewpoint.update_RT(cur_viewpoint.R_gt, cur_viewpoint.T_gt)
 
         self.kf_indices = []
         depth_map = self.add_new_keyframe(cur_frame_idx, init=True)
-        self.request_init(cur_frame_idx, viewpoint, depth_map)
-        self.reset = False
+        self.request_init(cur_frame_idx, cur_viewpoint, depth_map)
+        # self.reset = False
 
-    def tracking(self, cur_frame_idx, viewpoint):
-        
+    def tracking(self, cur_frame_idx, cur_viewpoint):
+
         # get previous camera pose
         prev = self.cameras[cur_frame_idx - self.use_every_n_frames]
-        
+
         # TODO: try constant velocity forward projection
-        viewpoint.update_RT(prev.R, prev.T)
+        cur_viewpoint.update_RT(prev.R, prev.T)
 
         opt_params = []
         opt_params.append(
             {
-                "params": [viewpoint.cam_rot_delta],
+                "params": [cur_viewpoint.cam_rot_delta],
                 "lr": self.config["Training"]["lr"]["cam_rot_delta"],
-                "name": "rot_{}".format(viewpoint.uid),
+                "name": "rot_{}".format(cur_viewpoint.frame_idx),
             }
         )
         opt_params.append(
             {
-                "params": [viewpoint.cam_trans_delta],
+                "params": [cur_viewpoint.cam_trans_delta],
                 "lr": self.config["Training"]["lr"]["cam_trans_delta"],
-                "name": "trans_{}".format(viewpoint.uid),
+                "name": "trans_{}".format(cur_viewpoint.frame_idx),
             }
         )
         opt_params.append(
             {
-                "params": [viewpoint.exposure_a],
+                "params": [cur_viewpoint.exposure_a],
                 "lr": 0.01,
-                "name": "exposure_a_{}".format(viewpoint.uid),
+                "name": "exposure_a_{}".format(cur_viewpoint.frame_idx),
             }
         )
         opt_params.append(
             {
-                "params": [viewpoint.exposure_b],
+                "params": [cur_viewpoint.exposure_b],
                 "lr": 0.01,
-                "name": "exposure_b_{}".format(viewpoint.uid),
+                "name": "exposure_b_{}".format(cur_viewpoint.frame_idx),
             }
         )
-
         pose_optimizer = torch.optim.Adam(opt_params)
-        
-        pbar = tqdm(range(self.tracking_itr_num), desc="Tracking")
+
+        pbar = tqdm(range(self.tracking_itr_num), desc=f"Tracking {cur_frame_idx}")
         for tracking_itr in pbar:
+            
             render_pkg = render(
-                viewpoint,
+                cur_viewpoint,
                 self.cam_intrinsics,
                 self.gaussians,
                 self.pipeline_params,
-                self.background
+                self.background,
             )
+            
             image, depth, opacity = (
                 render_pkg["render"],
                 render_pkg["depth"],
                 render_pkg["opacity"],
             )
+            
             pose_optimizer.zero_grad()
+            
             loss_tracking = get_loss_tracking(
-                self.config, image, depth, opacity, viewpoint
+                self.config, image, depth, opacity, cur_viewpoint
             )
+            
             loss_tracking.backward()
 
             with torch.no_grad():
                 pose_optimizer.step()
-                converged = update_pose(viewpoint, converged_threshold=1e-4)
+                converged = update_pose(cur_viewpoint, converged_threshold=1e-4)
 
             if tracking_itr % 10 == 0:
-                gtdepth = viewpoint.depth
-                if viewpoint.depth is None:
+                gtdepth = cur_viewpoint.depth
+                if cur_viewpoint.depth is None:
                     gtdepth = np.zeros(
                         (self.cam_intrinsics.height, self.cam_intrinsics.width)
                     )
-                else:
-                    # normalize the depth
-                    maxdepth = np.max(gtdepth)
-                    gtdepth = gtdepth / (maxdepth + 1e-6)
                 self.q_main2vis.put(
                     gui_utils.GaussianPacket(
-                        current_frame=viewpoint,
-                        gtcolor=viewpoint.original_image,
-                        gtdepth=gtdepth
+                        current_frame=cur_viewpoint,
+                        gtcolor=cur_viewpoint.original_image,
+                        gtdepth=gtdepth,
                     )
                 )
+
             if converged:
                 break
 
@@ -308,17 +310,24 @@ class FrontEnd(mp.Process):
 
         return window, removed_frame
 
-    def request_keyframe(self, cur_frame_idx, viewpoint, depthmap):
-        msg = ["keyframe", cur_frame_idx, viewpoint, self.current_window, depthmap]
+    def request_stop(self):
+        Log("Requesting backend stop.", tag="Frontend")
+        self.backend_queue.put(["stop"])
+    
+    def request_keyframe(self, cur_frame_idx, cur_viewpoint, depthmap):
+        Log("Requesting keyframe.", tag="Frontend")
+        msg = ["keyframe", cur_frame_idx, cur_viewpoint, self.current_window, depthmap]
         self.backend_queue.put(msg)
-        self.requested_keyframe += 1
+        self.requested_keyframe = True
 
-    def request_init(self, cur_frame_idx, viewpoint, depth_map):
-        msg = ["init", cur_frame_idx, viewpoint, depth_map]
+    def request_init(self, cur_frame_idx, cur_viewpoint, depth_map):
+        Log("Requesting initialization.", tag="Frontend")
+        msg = ["init", cur_frame_idx, cur_viewpoint, depth_map]
         self.backend_queue.put(msg)
         self.requested_init = True
 
-    def sync_backend(self, data):
+    def sync_from_backend(self, data):
+        Log("Syncing from backend.", tag="Frontend")
         self.gaussians = data[1]
         occ_aware_visibility = data[2]
         keyframes = data[3]
@@ -335,76 +344,66 @@ class FrontEnd(mp.Process):
 
     def run(self):
 
-        Log("Frontend Started.", tag="Frontend")
-        
-        cur_frame_idx = 0
-        
+        Log("Frontend Started", tag="Frontend")
+
         tic = torch.cuda.Event(enable_timing=True)
         toc = torch.cuda.Event(enable_timing=True)
 
+        prec_frame_idx = -1
+        cur_frame_idx = 0
         while True:
             
-            # if the visualization queue is empty
-            if self.q_vis2main.empty():
-                if self.pause:
-                    continue
-            else:
-                # get the data
-                data_vis2main = self.q_vis2main.get()
-                self.pause = data_vis2main.flag_pause
-                if self.pause:
-                    self.backend_queue.put(["pause"])
-                    continue
-                else:
-                    self.backend_queue.put(["unpause"])
-                    
+            if cur_frame_idx >= len(self.dataset):
+                self.request_stop()
+                break
+            
+            if cur_frame_idx != prec_frame_idx:
+                Log("Frontend Frame: ", cur_frame_idx, tag="Frontend")
+                prec_frame_idx = cur_frame_idx
+
+            # # if the visualization queue is empty
+            # if self.q_vis2main.empty():
+                
+            #     if self.pause:
+            #         continue
+            # else:
+            #     # get the data
+            #     data_vis2main = self.q_vis2main.get()
+            #     self.pause = data_vis2main.flag_pause
+            #     if self.pause:
+            #         self.backend_queue.put(["pause"])
+            #         continue
+            #     else:
+            #         self.backend_queue.put(["unpause"])
+
             # if the frontend queue is empty, do stuff
             if self.frontend_queue.empty():
-                tic.record()
                 
-                # this is the last iteration of the frontend
-                if cur_frame_idx >= len(self.dataset):
-                    if self.save_results:
-                        # skip this if the dataset does not have gt poses
-                        if self.dataset.has_traj:
-                            Log("Evaluating ATE at frame: ", cur_frame_idx, tag="Eval")
-                            eval_ate(
-                                self.cameras,
-                                self.kf_indices,
-                                self.save_dir,
-                                0,
-                                final=True,
-                                monocular=self.monocular,
-                            )
-                        # save the final gaussians
-                        save_gaussians(
-                            self.gaussians, self.save_dir, "final", final=True
-                        )
-                    break
+                # Log("Queue empty", tag="Frontend")
+                
+                tic.record()
 
                 if self.requested_init:
+                    # Log("Requested init.", tag="Frontend")
                     time.sleep(0.01)
                     continue
 
-                if self.single_thread and self.requested_keyframe > 0:
+                if self.requested_keyframe:
+                    # Log("Requested keyframe.", tag="Frontend")
                     time.sleep(0.01)
                     continue
 
-                if not self.initialized and self.requested_keyframe > 0:
-                    time.sleep(0.01)
-                    continue
-
-                viewpoint = CameraExtrinsics.init_from_dataset(
+                cur_viewpoint = CameraExtrinsics.init_from_dataset(
                     self.dataset,
                     cur_frame_idx,
-                    # projection_matrix
                 )
-                viewpoint.compute_grad_mask(self.config)
+                cur_viewpoint.compute_grad_mask(self.config)
 
-                self.cameras[cur_frame_idx] = viewpoint
+                self.cameras[cur_frame_idx] = cur_viewpoint
 
-                if self.reset:
-                    self.initialize(cur_frame_idx, viewpoint)
+                # if self.reset:
+                if cur_frame_idx == 0:
+                    self.initialize(cur_frame_idx, cur_viewpoint)
                     self.current_window.append(cur_frame_idx)
                     cur_frame_idx += 1
                     continue
@@ -414,9 +413,9 @@ class FrontEnd(mp.Process):
                 )
 
                 # Tracking
-                render_pkg = self.tracking(cur_frame_idx, viewpoint)
+                render_pkg = self.tracking(cur_frame_idx, cur_viewpoint)
 
-                # 
+                #
                 current_window_dict = {}
                 current_window_dict[self.current_window[0]] = self.current_window[1:]
                 keyframes = [self.cameras[kf_idx] for kf_idx in self.current_window]
@@ -425,19 +424,19 @@ class FrontEnd(mp.Process):
                 self.q_main2vis.put(
                     gui_utils.GaussianPacket(
                         gaussians=clone_obj(self.gaussians),
-                        current_frame=viewpoint,
+                        current_frame=cur_viewpoint,
                         cam_intrinsics=clone_obj(self.cam_intrinsics),
                         keyframes=keyframes,
                         kf_window=current_window_dict,
                     )
                 )
 
-                # 
-                if self.requested_keyframe > 0:
-                    self.cleanup(cur_frame_idx)
-                    cur_frame_idx += 1
-                    continue
-                
+                # #
+                # if self.requested_keyframe:
+                #     self.cleanup(cur_frame_idx)
+                #     cur_frame_idx += 1
+                #     continue
+
                 #
                 last_keyframe_idx = self.current_window[0]
                 check_time = (cur_frame_idx - last_keyframe_idx) >= self.kf_interval
@@ -460,8 +459,10 @@ class FrontEnd(mp.Process):
                         check_time
                         and point_ratio < self.config["Training"]["kf_overlap"]
                     )
-                if self.single_thread:
-                    create_kf = check_time and create_kf
+                
+                # if self.single_thread:
+                create_kf = check_time and create_kf
+                
                 if create_kf:
                     self.current_window, removed = self.add_to_window(
                         cur_frame_idx,
@@ -469,21 +470,19 @@ class FrontEnd(mp.Process):
                         self.occ_aware_visibility,
                         self.current_window,
                     )
-                    if self.monocular and not self.initialized and removed is not None:
-                        self.reset = True
-                        Log(
-                            "Keyframes lacks sufficient overlap to initialize the map, resetting."
-                        )
-                        continue
+                    # if self.monocular and not self.initialized and removed is not None:
+                    #     self.reset = True
+                    #     Log(
+                    #         "Keyframes lacks sufficient overlap to initialize the map, resetting."
+                    #     )
+                    #     continue
                     depth_map = self.add_new_keyframe(
                         cur_frame_idx,
                         depth=render_pkg["depth"],
                         opacity=render_pkg["opacity"],
                         init=False,
                     )
-                    self.request_keyframe(
-                        cur_frame_idx, viewpoint, depth_map
-                    )
+                    self.request_keyframe(cur_frame_idx, cur_viewpoint, depth_map)
                 else:
                     self.cleanup(cur_frame_idx)
                 cur_frame_idx += 1
@@ -506,26 +505,50 @@ class FrontEnd(mp.Process):
                         )
                 toc.record()
                 torch.cuda.synchronize()
+                
                 if create_kf:
                     # throttle at 3fps when keyframe is added
                     duration = tic.elapsed_time(toc)
                     time.sleep(max(0.01, 1.0 / 3.0 - duration / 1000))
             else:
-                
+
                 # if frontend queue is not empty, sync with backend
-                
+
                 data = self.frontend_queue.get()
+                
                 if data[0] == "sync_backend":
-                    self.sync_backend(data)
+                    self.sync_from_backend(data)
 
                 elif data[0] == "keyframe":
-                    self.sync_backend(data)
-                    self.requested_keyframe -= 1
+                    self.sync_from_backend(data)
+                    self.requested_keyframe = False
 
                 elif data[0] == "init":
-                    self.sync_backend(data)
+                    self.sync_from_backend(data)
                     self.requested_init = False
-
-                elif data[0] == "stop":
-                    Log("Frontend Stopped.")
-                    break
+                
+        # empty the queue
+        while not self.frontend_queue.empty():
+            self.frontend_queue.get()
+        
+        # 
+        Log("Frontend finished", tag="Frontend")
+        
+        if self.save_results:
+            
+            # skip this if the dataset does not have gt poses
+            if self.dataset.has_traj:
+                Log("Evaluating ATE at frame: ", cur_frame_idx, tag="Eval")
+                eval_ate(
+                    self.cameras,
+                    self.kf_indices,
+                    self.save_dir,
+                    0,
+                    final=True,
+                    monocular=self.monocular,
+                )
+            
+            # save the final gaussians
+            save_gaussians(
+                self.gaussians, self.save_dir, "final", final=True
+            )

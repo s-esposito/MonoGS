@@ -57,7 +57,7 @@ class Viewer:
         self.pipe = None
         self.background = None
 
-        self.init = False
+        # self.init = False
         self.kf_window = None
         self.render_img = None
 
@@ -68,7 +68,7 @@ class Viewer:
             self.background = params_gui.background
             self.gaussian_cur = params_gui.gaussians
             self.cam_intrinsics_cur = params_gui.cam_intrinsics
-            self.init = True
+            # self.init = True
             self.q_main2vis = params_gui.q_main2vis
             self.q_vis2main = params_gui.q_vis2main
             self.pipe = params_gui.pipe
@@ -262,17 +262,7 @@ class Viewer:
         self.renderer_gl.update_camera_intrin(self.camera_gl)
         self.renderer_gl.set_render_reso(self.camera_gl.w, self.camera_gl.h)
 
-    def add_camera(
-        self, camera, name, color=[0, 1, 0], gt=False, size=1.0
-    ):
-        if gt:
-            if camera.R_gt is None or camera.T_gt is None:
-                # no gt pose
-                return
-            else:
-                w2c = getWorld2View(camera.R_gt, camera.T_gt)
-        else:
-            w2c = getWorld2View(camera.R, camera.T)
+    def add_camera(self, w2c, name, color=[0, 1, 0], size=1.0):
 
         w2c = w2c.cpu().numpy()
         c2w = np.linalg.inv(w2c)
@@ -287,12 +277,20 @@ class Viewer:
             c2w, H=H, W=W, fx=fx, fy=fy, cx=cx, cy=cy, color=color, size=size
         )
         if name not in self.frustum_dict.keys():
+            # adding new camera frustum
+            # print(f"Adding {name}")
             self.combo_kf.add_item(name)
             self.frustum_dict[name] = frustum
             self.widget3d.scene.add_geometry(name, frustum.line_set, self.lit)
+        else:
+            # update camera pose
+            # print(f"Updating {name}")
+            pass
+        # update the camera frustum
         frustum.update_pose(c2w)
         self.widget3d.scene.set_geometry_transform(name, c2w.astype(np.float64))
         self.widget3d.scene.show_geometry(name, self.cameras_chbox.checked)
+        
         return frustum
 
     def _on_layout(self, layout_context):
@@ -354,7 +352,7 @@ class Viewer:
                 kf = self.frustum_dict["keyframe_{}".format(kf_idx)].view_dir[1]
                 points = [test1, kf]
                 lines = [[0, 1]]
-                colors = [[0, 1, 0]]
+                colors = [[1, 1, 0]]
 
                 line_set = o3d.geometry.LineSet()
                 line_set.points = o3d.utility.Vector3dVector(points)
@@ -414,22 +412,41 @@ class Viewer:
 
         if gaussian_packet.cam_intrinsics is not None:
             self.cam_intrinsics_cur = gaussian_packet.cam_intrinsics
-            self.init = True
-        
+            # self.init = True
+
         if gaussian_packet.has_gaussians:
             self.gaussian_cur = gaussian_packet
             self.output_info.text = "Number of Gaussians: {}".format(
                 self.gaussian_cur.get_xyz.shape[0]
             )
-            self.init = True
-
+            # self.init = True
+        
+        # current frame
         if gaussian_packet.current_frame is not None:
+            
+            camera = gaussian_packet.current_frame
+            
             # add current camera
+            w2c = getWorld2View(camera.R, camera.T)
             frustum = self.add_camera(
-                gaussian_packet.current_frame,
+                w2c,
                 name="current",
                 color=[0, 1, 0],
             )
+            
+            # add current camera gt (if available)
+            if camera.R_gt is not None and camera.T_gt is not None:
+                gt_w2c = getWorld2View(camera.R_gt, camera.T_gt)
+                self.add_camera(
+                    gt_w2c,
+                    name="current_gt",
+                    color=[1, 0, 0],
+                )
+            else:
+                print("No GT camera available")
+                exit(0)
+            
+            # if follow camera is checked, update viewpoint
             if self.followcam_chbox.checked:
                 viewpoint = (
                     frustum.view_dir_behind
@@ -438,19 +455,13 @@ class Viewer:
                 )
                 self.widget3d.look_at(viewpoint[0], viewpoint[1], viewpoint[2])
 
-        if gaussian_packet.keyframe is not None:
-            name = "keyframe_{}".format(gaussian_packet.keyframe.uid)
-            frustum = self.add_camera(
-                gaussian_packet.keyframe,
-                name=name,
-                color=[0, 0, 1],
-            )
-
+        # all keyframes
         if gaussian_packet.keyframes is not None:
             for keyframe in gaussian_packet.keyframes:
-                name = "keyframe_{}".format(keyframe.uid)
-                frustum = self.add_camera(
-                    keyframe,
+                w2c = getWorld2View(keyframe.R, keyframe.T)
+                name = "keyframe_{}".format(keyframe.frame_idx)
+                self.add_camera(
+                    w2c,
                     name=name,
                     color=[0, 0, 1],
                 )
@@ -467,8 +478,10 @@ class Viewer:
 
         if gaussian_packet.gtdepth is not None:
             depth = gaussian_packet.gtdepth
+            min_value = depth.min().item()
+            max_value = depth.max().item()
             depth = imgviz.depth2rgb(
-                depth, min_value=0.1, max_value=5.0, colormap="jet"
+                depth, min_value=min_value, max_value=max_value, colormap="jet"
             )
             depth = torch.from_numpy(depth)
             depth = torch.permute(depth, (2, 0, 1)).float()
@@ -552,7 +565,7 @@ class Viewer:
             self.gaussian_cur.get_features = alpha * features + (
                 1 - alpha
             ) * torch.from_numpy(rgb_kf).to(features.device)
-        
+
         # render the scene
         rendering_data = render(
             current_cam,
@@ -562,14 +575,14 @@ class Viewer:
             self.background,
             self.scaling_slider.double_value,
         )
-        
+
         if (
             self.time_shader_chbox.checked
             and self.gaussian_cur is not None
             and type(self.gaussian_cur) == GaussianPacket
         ):
             self.gaussian_cur.get_features = features
-        
+
         return rendering_data
 
     def render_o3d_image(self, results, current_cam, cam_intrinsics):
@@ -607,7 +620,7 @@ class Viewer:
                 | gl.GL_DEPTH_BUFFER_BIT
                 | gl.GL_STENCIL_BUFFER_BIT
             )
-            
+
             w2c = getWorld2View(current_cam.R, current_cam.T)
 
             w2c = w2c.cpu().numpy()
@@ -619,10 +632,8 @@ class Viewer:
             cy = cam_intrinsics.cy
             H = cam_intrinsics.height
             W = cam_intrinsics.width
-            frustum = create_frustum(
-                c2w, H=H, W=W, fx=fx, fy=fy, cx=cx, cy=cy
-            )
-            
+            frustum = create_frustum(c2w, H=H, W=W, fx=fx, fy=fy, cx=cx, cy=cy)
+
             glfw.set_window_size(self.window_gl, W, H)
             self.camera_gl.fovy = cam_intrinsics.FoVy
             self.camera_gl.update_resolution(H, W)
@@ -662,21 +673,16 @@ class Viewer:
         return render_img
 
     def render_gui(self):
-        
-        # TODO: needed ??
+
         # if not self.init:
         #     return
-        # 
         
         w2c = cv_gl @ self.widget3d.scene.camera.get_view_matrix()
         T = torch.from_numpy(w2c)
-        current_cam = CameraExtrinsics.init_from_gui(
-            uid=-1,
-            T=T
-        )
+        current_cam = CameraExtrinsics.init_from_gui(frame_idx=-1, T=T)
         # TODO: needed?
         current_cam.update_RT(T[0:3, 0:3], T[0:3, 3])
-        
+
         # get intrinsics from camera
         height = int(self.window.size.height)
         width = int(self.widget3d_width)
@@ -690,10 +696,8 @@ class Viewer:
         fy = fov2focal(FoVy, height)  # image_gui.shape[1])
         cx = width // 2  # image_gui.shape[2] // 2
         cy = height // 2  # image_gui.shape[1] // 2
-        cam_intrinsics = CameraIntrinsics.init_from_gui(
-            fx, fy, cx, cy, height, width
-        )
-        
+        cam_intrinsics = CameraIntrinsics.init_from_gui(fx, fy, cx, cy, height, width)
+
         results = self.rasterise(current_cam, cam_intrinsics)
         if results is None:
             return

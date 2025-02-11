@@ -86,7 +86,7 @@ def eval_ate(frames, kf_ids, save_dir, iterations, final=False, monocular=False)
 
         # get keyframe data
         kf = frames[kf_id]
-        trj_id.append(frames[kf_id].uid)
+        trj_id.append(frames[kf_id].frame_idx)
 
         # get estimated pose
         pose_est = np.linalg.inv(gen_pose_matrix(kf.R, kf.T))
