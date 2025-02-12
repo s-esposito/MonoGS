@@ -16,11 +16,12 @@ from OpenGL import GL as gl
 
 from gaussian_splatting.gaussian_renderer import render
 from gaussian_splatting.utils.graphics_utils import fov2focal, getWorld2View
-from viewer.gl_render import util, util_gau
+from viewer.gl_render.util import CameraGL
+from viewer.gl_render.util_gau import GaussianData
 from viewer.gl_render.render_ogl import OpenGLRenderer
+from viewer.gaussians_packet import GaussianPacket
 from viewer.gui_utils import (
-    GaussianPacket,
-    Packet_vis2main,
+    # Packet_vis2main,
     create_frustum,
     cv_gl,
     get_latest_queue,
@@ -43,9 +44,13 @@ class Viewer:
         self.window.set_on_close(self._on_close)
 
         self.step = 0
+        self.nr_frames = 0
+        self.cur_frame_idx = 0
         self.process_finished = False
         self.device = "cuda"
 
+        self.current_frame_frustum = None
+        self.current_frame_frustum_gt = None
         self.frustum_dict = {}
         self.model_dict = {}
 
@@ -54,7 +59,7 @@ class Viewer:
         self.q_main2vis = None
         self.gaussian_cur = None
         self.cam_intrinsics_cur = None
-        self.pipe = None
+        # self.pipe = None
         self.background = None
 
         # self.init = False
@@ -70,24 +75,22 @@ class Viewer:
             self.cam_intrinsics_cur = params_gui.cam_intrinsics
             # self.init = True
             self.q_main2vis = params_gui.q_main2vis
-            self.q_vis2main = params_gui.q_vis2main
-            self.pipe = params_gui.pipe
-            # self.width_3d = params_gui.width_data
-            # self.height_3d = params_gui.height_data
+            # self.q_vis2main = params_gui.q_vis2main
+            # self.pipe = params_gui.pipe
 
         Log(f"Viewer resolution {self.window_w}x{self.window_h}", tag="GUI")
         Log(f"Data resolution {self.width_3d}x{self.height_3d}", tag="GUI")
 
-        self.gaussian_nums = []
+        # self.gaussian_nums = []
 
-        self.camera_gl = util.CameraGL(self.window_h, self.window_w)
+        self.camera_gl = CameraGL(self.window_h, self.window_w)
         self.window_gl = self.init_glfw()
         self.renderer_gl = OpenGLRenderer(self.camera_gl.w, self.camera_gl.h)
 
         gl.glEnable(gl.GL_TEXTURE_2D)
         gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glDepthFunc(gl.GL_LEQUAL)
-        self.gaussians_gl = util_gau.GaussianData(0, 0, 0, 0, 0)
+        self.gaussians_gl = GaussianData(0, 0, 0, 0, 0)
 
         self.save_path = "."
         self.save_path = pathlib.Path(self.save_path)
@@ -126,10 +129,11 @@ class Viewer:
         em = self.window.theme.font_size
         margin = 0.5 * em
         self.panel = gui.Vert(0.5 * em, gui.Margins(margin))
-        self.button = gui.ToggleSwitch("Resume/Pause")
-        self.button.is_on = True
-        self.button.set_on_clicked(self._on_button)
-        self.panel.add_child(self.button)
+        
+        # self.button = gui.ToggleSwitch("Resume/Pause")
+        # self.button.is_on = True
+        # self.button.set_on_clicked(self._on_button)
+        # self.panel.add_child(self.button)
 
         self.panel.add_child(gui.Label("Viewpoint Options"))
 
@@ -149,10 +153,10 @@ class Viewer:
         chbox_tile.add_child(self.staybehind_chbox)
         vp_subtile1.add_child(chbox_tile)
 
-        ##Combo panels
+        # Combo panels
         combo_tile = gui.Vert(0.5 * em, gui.Margins(margin))
 
-        ## Jump to the camera viewpoint
+        # Jump to the camera viewpoint
         self.combo_kf = gui.Combobox()
         self.combo_kf.set_on_selection_changed(self._on_combo_kf)
         combo_tile.add_child(gui.Label("Viewpoint list"))
@@ -165,20 +169,29 @@ class Viewer:
 
         self.panel.add_child(gui.Label("3D Objects"))
         chbox_tile_3dobj = gui.Horiz(0.5 * em, gui.Margins(margin))
+        
         self.cameras_chbox = gui.Checkbox("Cameras")
         self.cameras_chbox.checked = True
         self.cameras_chbox.set_on_checked(self._on_cameras_chbox)
         chbox_tile_3dobj.add_child(self.cameras_chbox)
 
-        self.kf_window_chbox = gui.Checkbox("Active window")
-        self.kf_window_chbox.set_on_checked(self._on_kf_window_chbox)
-        chbox_tile_3dobj.add_child(self.kf_window_chbox)
-        self.panel.add_child(chbox_tile_3dobj)
+        # self.all_cameras_chbox = gui.Checkbox("All Cameras")
+        # self.all_cameras_chbox.checked = True
+        # self.all_cameras_chbox.set_on_checked(self._on_all_cameras_chbox)
+        # chbox_tile_3dobj.add_child(self.all_cameras_chbox)
+        
+        # self.kf_window_chbox = gui.Checkbox("Active window")
+        # self.kf_window_chbox.set_on_checked(self._on_kf_window_chbox)
+        # chbox_tile_3dobj.add_child(self.kf_window_chbox)
 
         self.axis_chbox = gui.Checkbox("Axis")
         self.axis_chbox.checked = False
         self.axis_chbox.set_on_checked(self._on_axis_chbox)
         chbox_tile_3dobj.add_child(self.axis_chbox)
+        
+        self.panel.add_child(chbox_tile_3dobj)
+        
+        # Rendering options
 
         self.panel.add_child(gui.Label("Rendering options"))
         chbox_tile_geometry = gui.Horiz(0.5 * em, gui.Margins(margin))
@@ -200,6 +213,8 @@ class Viewer:
         chbox_tile_geometry.add_child(self.elipsoid_chbox)
 
         self.panel.add_child(chbox_tile_geometry)
+        
+        # Scaling slider
 
         slider_tile = gui.Horiz(0.5 * em, gui.Margins(margin))
         slider_label = gui.Label("Gaussian Scale (0-1)")
@@ -210,7 +225,8 @@ class Viewer:
         slider_tile.add_child(self.scaling_slider)
         self.panel.add_child(slider_tile)
 
-        # screenshot buttom
+        # Screenshot buttom
+        
         self.screenshot_btn = gui.Button("Screenshot")
         self.screenshot_btn.set_on_clicked(
             self._on_screenshot_btn
@@ -222,9 +238,16 @@ class Viewer:
         tabs = gui.TabControl()
 
         tab_info = gui.Vert(0, tab_margins)
+        
+        # current frame idx
+        self.frame_idx_info = gui.Label("Current Frame Index: ")
+        tab_info.add_child(self.frame_idx_info)
+        
+        # nr gaussians
         self.output_info = gui.Label("Number of Gaussians: ")
         tab_info.add_child(self.output_info)
 
+        # input color/depth
         self.in_rgb_widget = gui.ImageWidget()
         self.in_depth_widget = gui.ImageWidget()
         tab_info.add_child(gui.Label("Input Color/Depth"))
@@ -262,10 +285,9 @@ class Viewer:
         self.renderer_gl.update_camera_intrin(self.camera_gl)
         self.renderer_gl.set_render_reso(self.camera_gl.w, self.camera_gl.h)
 
-    def add_camera(self, w2c, name, color=[0, 1, 0], size=1.0):
-
-        w2c = w2c.cpu().numpy()
-        c2w = np.linalg.inv(w2c)
+    def add_camera(self, c2w, name, color=[0, 1, 0], size=1.0):
+        # check if frustum already exists
+        # if name not in self.frustum_dict.keys():
         # get intrinsics from camera
         fx = self.cam_intrinsics_cur.fx.detach().cpu().numpy()
         fy = self.cam_intrinsics_cur.fy.detach().cpu().numpy()
@@ -276,17 +298,19 @@ class Viewer:
         frustum = create_frustum(
             c2w, H=H, W=W, fx=fx, fy=fy, cx=cx, cy=cy, color=color, size=size
         )
-        if name not in self.frustum_dict.keys():
-            # adding new camera frustum
-            # print(f"Adding {name}")
-            self.combo_kf.add_item(name)
-            self.frustum_dict[name] = frustum
-            self.widget3d.scene.add_geometry(name, frustum.line_set, self.lit)
-        else:
-            # update camera pose
-            # print(f"Updating {name}")
-            pass
-        # update the camera frustum
+        # add to scene
+        self.widget3d.scene.add_geometry(name, frustum.line_set, self.lit)
+        # else:
+        # # get frustum
+        # frustum = self.frustum_dict[name]
+        # # update color
+        # frustum.update_color(color)
+        # # remove geometry
+        # self.widget3d.scene.remove_geometry(name)
+        # # add geometry
+        # self.widget3d.scene.add_geometry(name, frustum.line_set, self.lit)
+        
+        # update camera pose
         frustum.update_pose(c2w)
         self.widget3d.scene.set_geometry_transform(name, c2w.astype(np.float64))
         self.widget3d.scene.show_geometry(name, self.cameras_chbox.checked)
@@ -315,12 +339,17 @@ class Viewer:
         self.is_done = True
         return True  # False would cancel the close
 
-    def _on_combo_model(self, new_val, new_idx):
-        model_idx = self.model_dict[new_val]
-        self.global_map.active_map_idx = model_idx
+    # def _on_combo_model(self, new_val, new_idx):
+    #     model_idx = self.model_dict[new_val]
+    #     self.global_map.active_map_idx = model_idx
 
-    def _on_combo_kf(self, new_val, new_idx):
-        frustum = self.frustum_dict[new_val]
+    def _on_combo_kf(self, name, new_idx):
+        if name == "current":
+            frustum = self.current_frame_frustum
+        elif name == "current_gt":
+            frustum = self.current_frame_frustum_gt
+        else:
+            frustum = self.frustum_dict[name]
         viewpoint = frustum.view_dir
 
         self.widget3d.look_at(viewpoint[0], viewpoint[1], viewpoint[2])
@@ -338,46 +367,46 @@ class Viewer:
         else:
             self.widget3d.scene.remove_geometry(name)
 
-    def _on_kf_window_chbox(self, is_checked):
-        if self.kf_window is None:
-            return
-        edge_cnt = 0
-        for key in self.kf_window.keys():
-            for kf_idx in self.kf_window[key]:
-                name = "kf_edge_{}".format(edge_cnt)
-                edge_cnt += 1
-                if "keyframe_{}".format(key) not in self.frustum_dict.keys():
-                    continue
-                test1 = self.frustum_dict["keyframe_{}".format(key)].view_dir[1]
-                kf = self.frustum_dict["keyframe_{}".format(kf_idx)].view_dir[1]
-                points = [test1, kf]
-                lines = [[0, 1]]
-                colors = [[1, 1, 0]]
+    # def _on_kf_window_chbox(self, is_checked):
+    #     if self.kf_window is None:
+    #         return
+    #     edge_cnt = 0
+    #     for key in self.kf_window.keys():
+    #         for kf_idx in self.kf_window[key]:
+    #             name = "kf_edge_{}".format(edge_cnt)
+    #             edge_cnt += 1
+    #             if "keyframe_{}".format(key) not in self.frustum_dict.keys():
+    #                 continue
+    #             test1 = self.frustum_dict["keyframe_{}".format(key)].view_dir[1]
+    #             kf = self.frustum_dict["keyframe_{}".format(kf_idx)].view_dir[1]
+    #             points = [test1, kf]
+    #             lines = [[0, 1]]
+    #             colors = [[1, 1, 0]]
 
-                line_set = o3d.geometry.LineSet()
-                line_set.points = o3d.utility.Vector3dVector(points)
-                line_set.lines = o3d.utility.Vector2iVector(lines)
-                line_set.colors = o3d.utility.Vector3dVector(colors)
+    #             line_set = o3d.geometry.LineSet()
+    #             line_set.points = o3d.utility.Vector3dVector(points)
+    #             line_set.lines = o3d.utility.Vector2iVector(lines)
+    #             line_set.colors = o3d.utility.Vector3dVector(colors)
 
-                if is_checked:
-                    self.widget3d.scene.remove_geometry(name)
-                    self.widget3d.scene.add_geometry(name, line_set, self.lit)
-                else:
-                    self.widget3d.scene.remove_geometry(name)
+    #             if is_checked:
+    #                 self.widget3d.scene.remove_geometry(name)
+    #                 self.widget3d.scene.add_geometry(name, line_set, self.lit)
+    #             else:
+    #                 self.widget3d.scene.remove_geometry(name)
 
-    def _on_button(self, is_on):
-        packet = Packet_vis2main()
-        packet.flag_pause = not self.button.is_on
-        self.q_vis2main.put(packet)
+    # def _on_button(self, is_on):
+    #     packet = Packet_vis2main()
+    #     packet.flag_pause = not self.button.is_on
+    #     self.q_vis2main.put(packet)
 
-    def _on_slider(self, value):
-        packet = self.prepare_viz2main_packet()
-        self.q_vis2main.put(packet)
+    # def _on_slider(self, value):
+    #     packet = self.prepare_viz2main_packet()
+    #     self.q_vis2main.put(packet)
 
-    def _on_render_btn(self):
-        packet = Packet_vis2main()
-        packet.flag_nextbatch = True
-        self.q_vis2main.put(packet)
+    # def _on_render_btn(self):
+    #     packet = Packet_vis2main()
+    #     packet.flag_nextbatch = True
+    #     self.q_vis2main.put(packet)
 
     def _on_screenshot_btn(self):
         if self.render_img is None:
@@ -410,65 +439,104 @@ class Viewer:
         if gaussian_packet is None:
             return
 
+        # intrinsics
         if gaussian_packet.cam_intrinsics is not None:
             self.cam_intrinsics_cur = gaussian_packet.cam_intrinsics
-            # self.init = True
 
+        # gaussians
         if gaussian_packet.has_gaussians:
             self.gaussian_cur = gaussian_packet
             self.output_info.text = "Number of Gaussians: {}".format(
                 self.gaussian_cur.get_xyz.shape[0]
             )
-            # self.init = True
         
+        # current frame idx
+        if gaussian_packet.current_frame_idx is not None:
+            self.cur_frame_idx = gaussian_packet.current_frame_idx
+            self.frame_idx_info.text = "Current Frame Index: {}".format(self.cur_frame_idx)
+
         # current frame
         if gaussian_packet.current_frame is not None:
             
             camera = gaussian_packet.current_frame
             
             # add current camera
-            w2c = getWorld2View(camera.R, camera.T)
-            frustum = self.add_camera(
-                w2c,
-                name="current",
-                color=[0, 1, 0],
-            )
-            
-            # add current camera gt (if available)
-            if camera.R_gt is not None and camera.T_gt is not None:
-                gt_w2c = getWorld2View(camera.R_gt, camera.T_gt)
-                self.add_camera(
-                    gt_w2c,
-                    name="current_gt",
-                    color=[1, 0, 0],
+            w2c = getWorld2View(camera.R, camera.T).cpu().numpy()
+            c2w = np.linalg.inv(w2c)
+            name = "current"
+            if self.current_frame_frustum is None:
+                frustum = self.add_camera(
+                    c2w,
+                    name=name,
+                    color=[0, 1, 0],
                 )
+                self.current_frame_frustum = frustum
+                # add new camera frustum to list
+                self.combo_kf.add_item(name)
             else:
-                print("No GT camera available")
-                exit(0)
+                # update pose
+                self.current_frame_frustum.update_pose(c2w)
+                self.widget3d.scene.set_geometry_transform(name, c2w.astype(np.float64))
             
             # if follow camera is checked, update viewpoint
             if self.followcam_chbox.checked:
                 viewpoint = (
-                    frustum.view_dir_behind
+                    self.current_frame_frustum.view_dir_behind
                     if self.staybehind_chbox.checked
-                    else frustum.view_dir
+                    else self.current_frame_frustum.view_dir
                 )
                 self.widget3d.look_at(viewpoint[0], viewpoint[1], viewpoint[2])
+            
+            # add current camera gt (if available)
+            if camera.R_gt is not None and camera.T_gt is not None:
+                w2c = getWorld2View(camera.R_gt, camera.T_gt).cpu().numpy()
+                c2w = np.linalg.inv(w2c)
+                name = "current_gt"
+                if self.current_frame_frustum_gt is None:
+                    frustum = self.add_camera(
+                        c2w,
+                        name="current_gt",
+                        color=[1, 0, 0],
+                    )
+                    self.current_frame_frustum_gt = frustum
+                    # add new camera frustum to list
+                    self.combo_kf.add_item(name)
+                else:
+                    # update pose
+                    self.current_frame_frustum_gt.update_pose(c2w)
+                    self.widget3d.scene.set_geometry_transform(name, c2w.astype(np.float64))
 
-        # all keyframes
-        if gaussian_packet.keyframes is not None:
-            for keyframe in gaussian_packet.keyframes:
-                w2c = getWorld2View(keyframe.R, keyframe.T)
-                name = "keyframe_{}".format(keyframe.frame_idx)
-                self.add_camera(
-                    w2c,
+        # whole sequence viewpoints subset
+        if gaussian_packet.viewpoints is not None:
+            
+            # remove all previosly added frustums
+            for name in self.frustum_dict.keys():
+                self.widget3d.scene.remove_geometry(name)
+                # remove from combo_kf
+                self.combo_kf.remove_item(name)
+            self.frustum_dict = {}
+            
+            for _, viewpoint in gaussian_packet.viewpoints.items():
+                w2c = getWorld2View(viewpoint.R, viewpoint.T).cpu().numpy()
+                c2w = np.linalg.inv(w2c)
+                name = "viewpoint_{}".format(viewpoint.frame_idx)
+                
+                color = [0, 0, 1]
+                if gaussian_packet.kf_window is not None:
+                    if viewpoint.frame_idx in gaussian_packet.kf_window:
+                        # viewpoint is a keyframe
+                        color = [1, 1, 0]
+                        
+                frustum = self.add_camera(
+                    c2w,
                     name=name,
-                    color=[0, 0, 1],
+                    color=color,
                 )
-
-        if gaussian_packet.kf_window is not None:
-            self.kf_window = gaussian_packet.kf_window
-            self._on_kf_window_chbox(is_checked=self.kf_window_chbox.checked)
+                
+                # add to dictionary
+                self.frustum_dict[name] = frustum
+                # add new camera frustum to list
+                self.combo_kf.add_item(name)
 
         if gaussian_packet.gtcolor is not None:
             rgb = torch.clamp(gaussian_packet.gtcolor, min=0, max=1.0) * 255
@@ -494,9 +562,9 @@ class Viewer:
             # clean up the pipe
             while not self.q_main2vis.empty():
                 self.q_main2vis.get()
-            while not self.q_vis2main.empty():
-                self.q_vis2main.get()
-            self.q_vis2main = None
+            # while not self.q_vis2main.empty():
+            #     self.q_vis2main.get()
+            # self.q_vis2main = None
             self.q_main2vis = None
             self.process_finished = True
 
@@ -554,7 +622,7 @@ class Viewer:
         if (
             self.time_shader_chbox.checked
             and self.gaussian_cur is not None
-            and type(self.gaussian_cur) == GaussianPacket
+            # and type(self.gaussian_cur) == GaussianPacket
         ):
             features = self.gaussian_cur.get_features.clone()
             kf_ids = self.gaussian_cur.unique_kfIDs.float()
@@ -571,7 +639,7 @@ class Viewer:
             current_cam,
             cam_intrinsics,
             self.gaussian_cur,
-            self.pipe,
+            # self.pipe,
             self.background,
             self.scaling_slider.double_value,
         )
@@ -579,7 +647,7 @@ class Viewer:
         if (
             self.time_shader_chbox.checked
             and self.gaussian_cur is not None
-            and type(self.gaussian_cur) == GaussianPacket
+            # and type(self.gaussian_cur) == GaussianPacket
         ):
             self.gaussian_cur.get_features = features
 
@@ -673,9 +741,6 @@ class Viewer:
         return render_img
 
     def render_gui(self):
-
-        # if not self.init:
-        #     return
         
         w2c = cv_gl @ self.widget3d.scene.camera.get_view_matrix()
         T = torch.from_numpy(w2c)
@@ -688,14 +753,13 @@ class Viewer:
         width = int(self.widget3d_width)
 
         vfov_deg = self.widget3d.scene.camera.get_field_of_view()
-        # hfov_deg = self.vfov_to_hfov(vfov_deg, image_gui.shape[1], image_gui.shape[2])
         hfov_deg = self.vfov_to_hfov(vfov_deg, height, width)
         FoVx = np.deg2rad(hfov_deg)
         FoVy = np.deg2rad(vfov_deg)
-        fx = fov2focal(FoVx, width)  # image_gui.shape[2])
-        fy = fov2focal(FoVy, height)  # image_gui.shape[1])
-        cx = width // 2  # image_gui.shape[2] // 2
-        cy = height // 2  # image_gui.shape[1] // 2
+        fx = fov2focal(FoVx, width)
+        fy = fov2focal(FoVy, height)
+        cx = width // 2
+        cy = height // 2
         cam_intrinsics = CameraIntrinsics.init_from_gui(fx, fy, cx, cy, height, width)
 
         results = self.rasterise(current_cam, cam_intrinsics)

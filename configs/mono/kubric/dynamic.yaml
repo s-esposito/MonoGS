@@ -1,10 +1,10 @@
 inherit_from: "configs/mono/kubric/base_config.yaml"
 
 Dataset:
-  dataset_path: "datasets/kubric/test"
+  dataset_path: "datasets/kubric/dynamic"
   Calibration:
-    fx: 560.0  # focal lenght (35mm) x image width (256px) / sensor width (32mm)
-    fy: 560.0
+    fx: 720.0  # focal lenght (45mm) x image width (512px) / sensor width (32mm)
+    fy: 720.0
     cx: 256.0
     cy: 256.0
     k1: 0.0

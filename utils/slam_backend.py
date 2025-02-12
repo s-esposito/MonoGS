@@ -19,24 +19,24 @@ class BackEnd(mp.Process):
         self.config = config
         self.gaussians = None
         self.cam_intrinsics = None
-        self.pipeline_params = None
+        # self.pipeline_params = None
         self.opt_params = None
         self.background = None
         self.cameras_extent = None
-        self.frontend_queue = None
-        self.backend_queue = None
+        self.q_back2front = None
+        self.q_front2back = None
         self.live_mode = False
 
         # self.pause = False
         self.device = "cuda"
         self.dtype = torch.float32
-        self.monocular = config["Training"]["monocular"]
-        self.iteration_count = 0
+        # self.monocular = True  # config["Training"]["monocular"]
+        self.nr_iters = 0
         self.last_sent = 0
         self.occ_aware_visibility = {}
         self.viewpoints = {}
         self.current_window = []
-        self.initialized = not self.monocular
+        self.initialized = False  # not self.monocular
         self.keyframe_optimizers = None
 
         Log("Backend initialized", tag="Backend")
@@ -63,7 +63,7 @@ class BackEnd(mp.Process):
         self.window_size = self.config["Training"]["window_size"]
         # self.single_thread = True
 
-    def add_next_kf(self, frame_idx, viewpoint, init=False, scale=2.0, depth_map=None):
+    def add_next_kf(self, frame_idx, viewpoint, init=False, scale=1.0, depth_map=None):
         #
         Log(f"Adding next keyframe {frame_idx}, init: {init}, scale: {scale}")
 
@@ -82,11 +82,11 @@ class BackEnd(mp.Process):
     def reset(self):
         #
         Log("Resetting", tag="Backend")
-        self.iteration_count = 0
+        self.nr_iters = 0
         self.occ_aware_visibility = {}
         self.viewpoints = {}
         self.current_window = []
-        self.initialized = not self.monocular
+        self.initialized = False  # not self.monocular
         self.keyframe_optimizers = None
 
         # remove all gaussians
@@ -95,19 +95,19 @@ class BackEnd(mp.Process):
 
         # remove everything from the queues
         Log("Clearing the queues", tag="Backend")
-        while not self.backend_queue.empty():
-            self.backend_queue.get()
+        while not self.q_front2back.empty():
+            self.q_front2back.get()
 
     def initialize_map(self, cur_frame_idx, viewpoint):
         #
         Log("Initializing the map", tag="Backend")
         for mapping_iteration in tqdm(range(self.init_itr_num)):
-            self.iteration_count += 1
+            self.nr_iters += 1
             render_pkg = render(
                 viewpoint,
                 self.cam_intrinsics,
                 self.gaussians,
-                self.pipeline_params,
+                # self.pipeline_params,
                 self.background,
             )
             (
@@ -148,8 +148,8 @@ class BackEnd(mp.Process):
                         None,
                     )
 
-                if self.iteration_count == self.init_gaussian_reset or (
-                    self.iteration_count == self.opt_params.densify_from_iter
+                if self.nr_iters == self.init_gaussian_reset or (
+                    self.nr_iters == self.opt_params.densify_from_iter
                 ):
                     self.gaussians.reset_opacity()
 
@@ -178,11 +178,12 @@ class BackEnd(mp.Process):
                 continue
             random_viewpoint_stack.append(viewpoint)
 
-        disable_pbar = iters == 1
-        pbar = tqdm(range(iters), desc="Mapping", ncols=100, disable=disable_pbar)
+        # disable_pbar = iters == 1
+        nr_mapping_iters = 0
+        pbar = tqdm(range(iters), desc="Mapping", ncols=100, disable=True)
         for _ in pbar:
 
-            self.iteration_count += 1
+            self.nr_iters += 1
             self.last_sent += 1
 
             loss_mapping = 0
@@ -203,7 +204,7 @@ class BackEnd(mp.Process):
                     viewpoint,
                     self.cam_intrinsics,
                     self.gaussians,
-                    self.pipeline_params,
+                    # self.pipeline_params,
                     self.background,
                 )
                 # extract render results
@@ -232,6 +233,8 @@ class BackEnd(mp.Process):
                 visibility_filter_acm.append(visibility_filter)
                 radii_acm.append(radii)
                 n_touched_acm.append(n_touched)
+                
+                nr_mapping_iters += 1
 
             # Randomly sample two additional viewpoints
             cam_idxs = torch.randperm(len(random_viewpoint_stack))[:2]
@@ -244,7 +247,7 @@ class BackEnd(mp.Process):
                     viewpoint,
                     self.cam_intrinsics,
                     self.gaussians,
-                    self.pipeline_params,
+                    # self.pipeline_params,
                     self.background,
                 )
                 # extract render results
@@ -271,6 +274,8 @@ class BackEnd(mp.Process):
                 viewspace_point_tensor_acm.append(viewspace_point_tensor)
                 visibility_filter_acm.append(visibility_filter)
                 radii_acm.append(radii)
+                
+                nr_mapping_iters += 1
 
             scaling = self.gaussians.get_scaling
             isotropic_loss = torch.abs(scaling - scaling.mean(dim=1).view(-1, 1))
@@ -310,7 +315,7 @@ class BackEnd(mp.Process):
                             to_prune = torch.logical_and(
                                 self.gaussians.n_obs <= prune_coviz, mask
                             )
-                        if to_prune is not None and self.monocular:
+                        if to_prune is not None:  # and self.monocular:
                             self.gaussians.prune_points(to_prune.cuda())
                             for idx in range((len(current_window))):
                                 current_idx = current_window[idx]
@@ -333,7 +338,7 @@ class BackEnd(mp.Process):
                     )
 
                 update_gaussian = (
-                    self.iteration_count % self.gaussian_update_every
+                    self.nr_iters % self.gaussian_update_every
                     == self.gaussian_update_offset
                 )
                 if update_gaussian:
@@ -346,25 +351,30 @@ class BackEnd(mp.Process):
                     gaussian_split = True
 
                 # Opacity reset
-                if (self.iteration_count % self.gaussian_reset) == 0 and (
+                if (self.nr_iters % self.gaussian_reset) == 0 and (
                     not update_gaussian
                 ):
                     Log("Resetting the opacity of non-visible Gaussians", tag="Backend")
                     self.gaussians.reset_opacity_nonvisible(visibility_filter_acm)
                     gaussian_split = True
 
+                #
                 self.gaussians.optimizer.step()
                 self.gaussians.optimizer.zero_grad(set_to_none=True)
-                self.gaussians.update_learning_rate(self.iteration_count)
+                self.gaussians.update_learning_rate(self.nr_iters)
+                # 
                 self.keyframe_optimizers.step()
                 self.keyframe_optimizers.zero_grad(set_to_none=True)
 
                 # Pose update
                 for cam_idx in range(min(frames_to_optimize, len(current_window))):
                     viewpoint = viewpoint_stack[cam_idx]
+                    # do not update the first frame
                     if viewpoint.frame_idx == 0:
                         continue
                     update_pose(viewpoint)
+            
+        Log(f"Optimized map for {nr_mapping_iters} iters", tag="Backend")
 
         return gaussian_split
 
@@ -382,7 +392,7 @@ class BackEnd(mp.Process):
                 viewpoint_cam,
                 self.cam_intrinsics,
                 self.gaussians,
-                self.pipeline_params,
+                # self.pipeline_params,
                 self.background,
             )
             image, visibility_filter, radii = (
@@ -391,7 +401,7 @@ class BackEnd(mp.Process):
                 render_pkg["radii"],
             )
 
-            gt_image = viewpoint_cam.original_image.cuda()
+            gt_image = viewpoint_cam.rgb.cuda()
             Ll1 = l1_loss(image, gt_image)
             loss = (1.0 - self.opt_params.lambda_dssim) * (
                 Ll1
@@ -405,10 +415,8 @@ class BackEnd(mp.Process):
                 self.gaussians.optimizer.step()
                 self.gaussians.optimizer.zero_grad(set_to_none=True)
                 self.gaussians.update_learning_rate(iteration)
-        Log("Map refinement done")
-
+        
     def push_to_frontend(self, tag):
-        Log("Pushing to frontend", tag="Backend")
         self.last_sent = 0
         keyframes = []
         for kf_idx in self.current_window:
@@ -421,7 +429,7 @@ class BackEnd(mp.Process):
             keyframes,
             clone_obj(self.cam_intrinsics),
         ]
-        self.frontend_queue.put(msg)
+        self.q_back2front.put(msg)
 
     def run(self):
 
@@ -430,7 +438,7 @@ class BackEnd(mp.Process):
         while True:
 
             # if backend queue is empty, sleep for a while
-            if self.backend_queue.empty():
+            if self.q_front2back.empty():
                 
                 # Log("Queue empty", tag="Backend")
                 
@@ -443,20 +451,24 @@ class BackEnd(mp.Process):
                     continue
 
                 # if self.single_thread:
-                time.sleep(0.01)
+                # time.sleep(0.01)
                 # continue
 
-                self.optimize_map(self.current_window, prune=False, iters=1)
-                if self.last_sent >= 10:
-                    self.optimize_map(self.current_window, prune=True, iters=10)
-                    self.push_to_frontend("sync_backend")
+                # TODO: should activate?
+                # optimize map if frontend queue is empty
+                # self.optimize_map(self.current_window, prune=False, iters=1)
+                
+                # TODO: needed?
+                # if self.last_sent >= 10:
+                #     self.optimize_map(self.current_window, prune=True, iters=10)
+                #     self.push_to_frontend("sync_backend")
 
             else:
 
-                data = self.backend_queue.get()
+                data = self.q_front2back.get()
 
                 if data[0] == "stop":
-                    Log("Stopping the backend", tag="Backend")
+                    Log("Stopping", tag="Backend")
                     break
 
                 # elif data[0] == "pause":
@@ -514,9 +526,9 @@ class BackEnd(mp.Process):
 
                     # iterate over the keyframes in the window
                     for cam_idx in range(len(self.current_window)):
-
+                        
+                        # do not optimize the first frame
                         if self.current_window[cam_idx] == 0:
-                            # TODO: why?
                             continue
 
                         # get viewpoint
@@ -566,9 +578,14 @@ class BackEnd(mp.Process):
 
                     raise Exception("Unprocessed data", data)
 
+        self.push_to_frontend("stop")
+
         # empty the queues
-        while not self.backend_queue.empty():
-            self.backend_queue.get()
+        while not self.q_front2back.empty():
+            self.q_front2back.get()
+
+        # torch.cuda.empty_cache()
+        # torch.cuda.ipc_collect()  # Helps with shared memory cleanup
 
         Log("Backend halted", tag="Backend")
 

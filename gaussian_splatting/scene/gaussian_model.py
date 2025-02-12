@@ -110,7 +110,7 @@ class GaussianModel:
         #
         Log("Creating PCD from image", tag="Backend")
 
-        image_ab = (torch.exp(cam.exposure_a)) * cam.original_image + cam.exposure_b
+        image_ab = (torch.exp(cam.exposure_a)) * cam.rgb + cam.exposure_b
         image_ab = torch.clamp(image_ab, 0.0, 1.0)
         rgb_raw = (image_ab * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy()
 
@@ -122,12 +122,16 @@ class GaussianModel:
             if depth_raw is None:
                 depth_raw = np.empty((cam.image_height, cam.image_width))
 
-            if self.config["Dataset"]["sensor_type"] == "monocular":
-                depth_raw = (
-                    np.ones_like(depth_raw)
-                    + (np.random.randn(depth_raw.shape[0], depth_raw.shape[1]) - 0.5)
-                    * 0.05
-                ) * scale
+            # if self.config["Dataset"]["sensor_type"] == "monocular":
+            # depth_raw = (
+            #     np.ones_like(depth_raw)
+            #     + (np.random.randn(depth_raw.shape[0], depth_raw.shape[1]) - 0.5)
+            #     * 0.05
+            # ) * scale
+            
+            depth_raw = (
+                np.ones_like(depth_raw) + (np.random.randn(depth_raw.shape[0], depth_raw.shape[1])) * 0.05
+            ) * scale
 
             rgb = o3d.geometry.Image(rgb_raw.astype(np.uint8))
             depth = o3d.geometry.Image(depth_raw.astype(np.float32))

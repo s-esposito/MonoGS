@@ -14,6 +14,7 @@ from gaussian_splatting.scene.gaussian_model import GaussianModel
 from utils.camera_utils import CameraIntrinsics
 from gaussian_splatting.utils.system_utils import mkdir_p
 from viewer import gui_utils, slam_viewer
+from viewer.gaussians_packet import GaussianPacket
 from utils.config_utils import load_config
 from utils.dataset import load_dataset
 from utils.eval_utils import eval_ate, eval_rendering, save_gaussians
@@ -30,22 +31,24 @@ class SLAM:
         self.save_dir = save_dir
         model_params = munchify(config["model_params"])
         opt_params = munchify(config["opt_params"])
-        pipeline_params = munchify(config["pipeline_params"])
-        self.model_params, self.opt_params, self.pipeline_params = (
-            model_params,
-            opt_params,
-            pipeline_params,
-        )
+        # pipeline_params = munchify(config["pipeline_params"])
+        # self.model_params, self.opt_params, self.pipeline_params = (
+        #     model_params,
+        #     opt_params,
+        #     pipeline_params,
+        # )
+        self.model_params = model_params
+        self.opt_params = opt_params
 
-        self.live_mode = self.config["Dataset"]["type"] == "realsense"
-        self.monocular = self.config["Dataset"]["sensor_type"] == "monocular"
-        self.use_spherical_harmonics = self.config["Training"]["spherical_harmonics"]
-        self.use_gui = self.config["Results"]["use_gui"]
-        if self.live_mode:
-            self.use_gui = True
+        self.live_mode = False  # self.config["Dataset"]["type"] == "realsense"
+        self.monocular = True  # self.config["Dataset"]["sensor_type"] == "monocular"
+        self.use_spherical_harmonics = False  # self.config["Training"]["spherical_harmonics"]
+        self.use_gui = True  # self.config["Results"]["use_gui"]
+        # if self.live_mode:
+        #     self.use_gui = True
         # self.eval_rendering = self.config["Results"]["eval_rendering"]
         self.config["Results"]["save_dir"] = save_dir
-        self.config["Training"]["monocular"] = self.monocular
+        # self.config["Training"]["monocular"] = self.monocular
 
         model_params.sh_degree = 3 if self.use_spherical_harmonics else 0
 
@@ -66,24 +69,24 @@ class SLAM:
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
         # create queues for the frontend and backend
-        frontend_queue = mp.Queue()
-        backend_queue = mp.Queue()
+        q_back2front = mp.Queue()
+        q_front2back = mp.Queue()
 
         # create queues for the gui
         # main to visualization queue
         q_main2vis = mp.Queue() if self.use_gui else FakeQueue()
         # visualization to main queue
-        q_vis2main = mp.Queue() if self.use_gui else FakeQueue()
+        # q_vis2main = mp.Queue() if self.use_gui else FakeQueue()
 
         # start gui process
         if self.use_gui:
             params_gui = gui_utils.ParamsGUI(
-                pipe=self.pipeline_params,
+                # pipe=self.pipeline_params,
                 background=self.background,
                 gaussians=self.gaussians,
                 cam_intrinsics=self.cam_intrinsics,
                 q_main2vis=q_main2vis,
-                q_vis2main=q_vis2main,
+                # q_vis2main=q_vis2main,
                 width_data=self.dataset.width,
                 height_data=self.dataset.height,
             )
@@ -94,7 +97,7 @@ class SLAM:
         # instantiate cuda events
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
-
+        
         # record the start time
         start.record()
 
@@ -102,13 +105,12 @@ class SLAM:
         self.frontend = FrontEnd(self.config)
         self.frontend.dataset = self.dataset
         self.frontend.background = self.background
-        self.frontend.pipeline_params = self.pipeline_params
-        self.frontend.frontend_queue = frontend_queue
-        self.frontend.backend_queue = backend_queue
+        # self.frontend.pipeline_params = self.pipeline_params
+        self.frontend.q_back2front = q_back2front
+        self.frontend.q_front2back = q_front2back
         self.frontend.q_main2vis = q_main2vis
-        self.frontend.q_vis2main = q_vis2main
+        # self.frontend.q_vis2main = q_vis2main
         self.frontend.set_hyperparams()
-        
         
         # start backend process
         self.backend = BackEnd(self.config)
@@ -116,10 +118,10 @@ class SLAM:
         self.backend.cam_intrinsics = self.cam_intrinsics
         self.backend.background = self.background
         self.backend.cameras_extent = 6.0
-        self.backend.pipeline_params = self.pipeline_params
+        # self.backend.pipeline_params = self.pipeline_params
         self.backend.opt_params = self.opt_params
-        self.backend.frontend_queue = frontend_queue
-        self.backend.backend_queue = backend_queue
+        self.backend.q_back2front = q_back2front
+        self.backend.q_front2back = q_front2back
         self.backend.live_mode = self.live_mode
         self.backend.set_hyperparams()
         
@@ -129,14 +131,15 @@ class SLAM:
         
         # start the frontend process
         self.frontend.run()  # same process
-
+        
+        # join the backend process
+        backend_process.join()
+        Log("Backend stopped and joined the main thread")
+        
         # record the end time
         end.record()
         torch.cuda.synchronize()
         
-        backend_process.join()
-        Log("Backend stopped and joined the main thread")
-
         # # empty the frontend queue
         # N_frames = len(self.frontend.cameras)
         # FPS = N_frames / (start.elapsed_time(end) * 0.001)
@@ -169,7 +172,7 @@ class SLAM:
                 self.gaussians,
                 self.dataset,
                 self.save_dir,
-                self.pipeline_params,
+                # self.pipeline_params,
                 self.background,
                 kf_indices=kf_indices,
                 iteration="before_opt",
@@ -186,15 +189,15 @@ class SLAM:
             )
 
             # re-used the frontend queue to retrive the gaussians from the backend.
-            while not frontend_queue.empty():
-                frontend_queue.get()
-            backend_queue.put(["color_refinement"])
+            while not q_back2front.empty():
+                q_back2front.get()
+            q_front2back.put(["color_refinement"])
             while True:
-                if frontend_queue.empty():
+                if q_back2front.empty():
                     time.sleep(0.01)
                     continue
-                data = frontend_queue.get()
-                if data[0] == "sync_backend" and frontend_queue.empty():
+                data = q_back2front.get()
+                if data[0] == "sync_backend" and q_back2front.empty():
                     gaussians = data[1]
                     self.gaussians = gaussians
                     break
@@ -204,7 +207,7 @@ class SLAM:
                 self.gaussians,
                 self.dataset,
                 self.save_dir,
-                self.pipeline_params,
+                # self.pipeline_params,
                 self.background,
                 kf_indices=kf_indices,
                 iteration="after_opt",
@@ -220,10 +223,13 @@ class SLAM:
             wandb.log({"Metrics": metrics_table})
             save_gaussians(self.gaussians, self.save_dir, "final_after_opt", final=True)
 
-        # if self.use_gui:
-        #     q_main2vis.put(gui_utils.GaussianPacket(finish=True))
-        #     gui_process.join()
-        #     Log("GUI Stopped and joined the main thread")
+        if self.use_gui:
+            # q_main2vis.put(GaussianPacket(finish=True))
+            # wait for user to close the GUI
+            gui_process.join()
+            Log("GUI Stopped and joined the main thread")
+        
+        Log("SLAM finished")
 
 
 if __name__ == "__main__":
@@ -235,7 +241,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args(sys.argv[1:])
 
-    mp.set_start_method("spawn")
+    mp.set_start_method("spawn", force=True)
 
     print("Loading config from", args.config)
     with open(args.config, "r") as yml:

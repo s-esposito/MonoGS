@@ -135,7 +135,7 @@ def eval_rendering(
     gaussians,
     dataset,
     save_dir,
-    pipe,
+    # pipe,
     background,
     kf_indices,
     iteration="final",
@@ -157,7 +157,12 @@ def eval_rendering(
         frame = frames[idx]
         gt_image, _, _ = dataset[idx]
 
-        rendering = render(frame, gaussians, pipe, background)["render"]
+        rendering = render(
+            frame,
+            gaussians,
+            # pipe,
+            background
+        )["render"]
         image = torch.clamp(rendering, 0.0, 1.0)
 
         gt = (gt_image.cpu().numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)

@@ -107,7 +107,7 @@ class CameraExtrinsics(nn.Module):
         #     self.R = self.R_gt
         #     self.T = self.T_gt
 
-        self.original_image = color
+        self.rgb = color
 
         self.depth = depth
         self.grad_mask = None
@@ -169,7 +169,7 @@ class CameraExtrinsics(nn.Module):
     def compute_grad_mask(self, config):
         edge_threshold = config["Training"]["edge_threshold"]
 
-        gray_img = self.original_image.mean(dim=0, keepdim=True)
+        gray_img = self.rgb.mean(dim=0, keepdim=True)
         gray_grad_v, gray_grad_h = image_gradient(gray_img)
         mask_v, mask_h = image_gradient_mask(gray_img)
         gray_grad_v = gray_grad_v * mask_v
@@ -179,7 +179,7 @@ class CameraExtrinsics(nn.Module):
         if config["Dataset"]["type"] == "replica":
             row, col = 32, 32
             multiplier = edge_threshold
-            _, h, w = self.original_image.shape
+            _, h, w = self.rgb.shape
             for r in range(row):
                 for c in range(col):
                     block = img_grad_intensity[
@@ -198,7 +198,7 @@ class CameraExtrinsics(nn.Module):
             )
 
     def clean(self):
-        self.original_image = None
+        self.rgb = None
         self.depth = None
         self.grad_mask = None
 
