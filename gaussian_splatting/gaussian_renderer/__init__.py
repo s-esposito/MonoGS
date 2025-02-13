@@ -20,7 +20,7 @@ from utils.camera_utils import (
     get_full_proj_transform,
 )
 from gaussian_splatting.scene.gaussian_model import GaussianModel
-from gaussian_splatting.utils.sh_utils import eval_sh
+# from gaussian_splatting.utils.sh_utils import eval_sh
 
 
 def render(

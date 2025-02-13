@@ -82,9 +82,10 @@ class CameraIntrinsics(nn.Module):
 class CameraExtrinsics(nn.Module):
     def __init__(
         self,
-        frame_idx,
-        color,
-        depth,
+        frame_idx: int,
+        rgb,
+        depth=None,
+        segmentation=None,
         gt_pose=None,
         device="cuda:0",
     ):
@@ -102,14 +103,11 @@ class CameraExtrinsics(nn.Module):
         else:
             self.R_gt = gt_pose[:3, :3]
             self.T_gt = gt_pose[:3, 3]
-            
-        # if frame_idx == 0 and gt_pose is not None:
-        #     self.R = self.R_gt
-        #     self.T = self.T_gt
 
-        self.rgb = color
+        self.rgb = rgb
 
         self.depth = depth
+        self.segmentation = segmentation
         self.grad_mask = None
 
         self.cam_rot_delta = nn.Parameter(
@@ -126,19 +124,26 @@ class CameraExtrinsics(nn.Module):
             torch.tensor([0.0], requires_grad=True, device=device)
         )
 
-        # self.projection_matrix = projection_matrix.to(device=device)
-
     @staticmethod
     def init_from_dataset(
         dataset,
         frame_idx,
     ):
-        gt_color, gt_depth, gt_pose = dataset[frame_idx]
+        data = dataset[frame_idx]
+        
+        rgb = data.get("rgb")
+        assert rgb is not None, "rgb is required"
+        
+        segmentation = data.get("segmentation", None)
+        depth = data.get("depth", None)
+        pose = data.get("pose", None)
+        
         return CameraExtrinsics(
             frame_idx,
-            gt_color,
-            gt_depth,
-            gt_pose=gt_pose,
+            rgb=rgb,
+            depth=depth,
+            segmentation=segmentation,
+            gt_pose=pose,
             device=dataset.device,
         )
 
@@ -149,8 +154,7 @@ class CameraExtrinsics(nn.Module):
     ):
         return CameraExtrinsics(
             frame_idx,
-            color=None,
-            depth=None,
+            rgb=None,
             gt_pose=T,
         )
 

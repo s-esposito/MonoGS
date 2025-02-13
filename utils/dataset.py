@@ -290,6 +290,11 @@ class BaseDataset(torch.utils.data.Dataset):
         self.device = "cuda:0"
         self.dtype = torch.float32
         self.num_imgs = 999999
+        self.nr_objects = 1
+        #
+        self.nr_objects = 1
+        self.objects_ids = [0]
+        self.objects_names = ["bg"]
 
     def __len__(self):
         return self.num_imgs
@@ -302,6 +307,7 @@ class MonocularDataset(BaseDataset):
     def __init__(self, args, path, config):
         super().__init__(args, path, config)
         calibration = config["Dataset"]["Calibration"]
+        objects = config["Dataset"].get("Objects", None)
         # Camera prameters
         self.fx = calibration["fx"]
         self.fy = calibration["fy"]
@@ -339,7 +345,11 @@ class MonocularDataset(BaseDataset):
         # segmentation masks
         self.has_segmentation = False
         self.segmentation_paths = []
-        self.segments_ids = []
+        # objects (ids and names of segments)
+        if objects is not None:
+            self.nr_objects = len(objects.keys())
+            self.objects_ids = [k for k in objects.keys()]
+            self.objects_names = [objects[k] for k in objects.keys()]
         # gt poses
         self.has_traj = True
         self.poses = []
@@ -427,19 +437,26 @@ class MonocularDataset(BaseDataset):
         if depth is not None:
             print(f"Depth shape: {depth.shape}, min: {depth.min()}, max: {depth.max()}")
         else:
-            print(f"Depth shape: None")
+            print("Depth shape: None")
             
         if segmentation is not None:
             print(f"Segmentation shape: {segmentation.shape}, unique classes: {np.unique(segmentation)}")
         else:
-            print(f"Segmentation shape: None")    
+            print("Segmentation shape: None")    
             
         if pose is not None:
             print(f"Pose shape: {pose.shape}")
         else:
-            print(f"Pose shape: None")
+            print("Pose shape: None")
 
-        return image, depth, pose
+        data = {
+            "rgb": image,
+            "depth": depth,
+            "segmentation": segmentation,
+            "pose": pose,
+        }
+        
+        return data
 
 
 class StereoDataset(BaseDataset):
@@ -553,8 +570,14 @@ class StereoDataset(BaseDataset):
             .to(device=self.device, dtype=self.dtype)
         )
         pose = torch.from_numpy(pose).to(device=self.device)
+        
+        data = {
+            "rgb": image,
+            "depth": depth,
+            "pose": pose,
+        }
 
-        return image, depth, pose
+        return data
 
 
 class KubricDataset(MonocularDataset):
@@ -577,6 +600,9 @@ class KubricDataset(MonocularDataset):
         print(f"Depth paths lenght: {len(self.depth_paths)}")
         print(f"Segmentation paths lenght: {len(self.segmentation_paths)}")
         print(f"Poses lenght: {len(self.poses)}")
+        # 
+        print("Nr objects", self.nr_objects)
+        print("Objects IDs", self.objects_ids)
 
 
 class DavisDataset(MonocularDataset):
@@ -732,8 +758,14 @@ class RealsenseDataset(BaseDataset):
             .permute(2, 0, 1)
             .to(device=self.device, dtype=self.dtype)
         )
+        
+        data = {
+            "rgb": image,
+            "depth": depth,
+            "pose": pose,
+        }
 
-        return image, depth, pose
+        return data
 
 
 def load_dataset(args, path, config):

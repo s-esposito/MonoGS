@@ -16,4 +16,6 @@ Dataset:
     height: 1080
     depth_scale: 1.0
     distorted: False
-    segments: [0, 1]
+  Objects:
+    0: "background"
+    1: "object"

@@ -10,6 +10,7 @@ class GaussianData:
     scale: np.ndarray
     opacity: np.ndarray
     sh: np.ndarray
+    ids: np.ndarray
 
     def flat(self) -> np.ndarray:
         ret = np.concatenate(

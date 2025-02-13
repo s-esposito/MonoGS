@@ -61,7 +61,7 @@ class GaussianRenderBase:
         raise NotImplementedError()
 
 
-class OpenGLRenderer(GaussianRenderBase):
+class GaussiansRenderGL(GaussianRenderBase):
     def __init__(self, w, h):
         super().__init__()
         gl.glViewport(0, 0, w, h)

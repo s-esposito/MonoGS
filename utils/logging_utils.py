@@ -5,7 +5,7 @@ _log_styles = {
     "GUI": "bold magenta",
     "Eval": "bold red",
     "Backend": "bold blue",
-    "Frontend": "bold cyan",
+    "Main": "bold cyan",
 }
 
 

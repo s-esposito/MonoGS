@@ -32,16 +32,18 @@ from gaussian_splatting.utils.system_utils import mkdir_p
 
 
 class GaussianModel:
-    def __init__(self, sh_degree: int, config=None):
+    def __init__(self, config):
+        #
         self.active_sh_degree = 0
-        self.max_sh_degree = sh_degree
-
+        self.max_sh_degree = config.sh_degree
+        # 
         self._xyz = torch.empty(0, device="cuda")
         self._features_dc = torch.empty(0, device="cuda")
         self._features_rest = torch.empty(0, device="cuda")
         self._scaling = torch.empty(0, device="cuda")
         self._rotation = torch.empty(0, device="cuda")
         self._opacity = torch.empty(0, device="cuda")
+        self._id = torch.empty(0, device="cuda", dtype=torch.int)
         self.max_radii2D = torch.empty(0, device="cuda")
         self.xyz_gradient_accum = torch.empty(0, device="cuda")
 
@@ -60,10 +62,11 @@ class GaussianModel:
 
         self.rotation_activation = torch.nn.functional.normalize
 
-        self.config = config
+        # self.config = config
         self.ply_input = None
 
-        self.isotropic = False
+        # TODO: make hyperparameter
+        self.isotropic = config.isotropic
 
     def build_covariance_from_scaling_rotation(
         self, scaling, scaling_modifier, rotation
@@ -94,6 +97,10 @@ class GaussianModel:
     @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
+    
+    @property
+    def get_ids(self):
+        return self._id
 
     def get_covariance(self, scaling_modifier=1):
         return self.covariance_activation(
@@ -112,52 +119,60 @@ class GaussianModel:
 
         image_ab = (torch.exp(cam.exposure_a)) * cam.rgb + cam.exposure_b
         image_ab = torch.clamp(image_ab, 0.0, 1.0)
+        
         rgb_raw = (image_ab * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy()
 
-        if depthmap is not None:
-            rgb = o3d.geometry.Image(rgb_raw.astype(np.uint8))
-            depth = o3d.geometry.Image(depthmap.astype(np.float32))
-        else:
-            depth_raw = cam.depth
-            if depth_raw is None:
-                depth_raw = np.empty((cam.image_height, cam.image_width))
+        segmentation = None
+        if cam.segmentation is not None:
+            segmentation = o3d.geometry.Image(cam.segmentation.astype(np.uint8))
+        
+        # if depthmap is not None:
+        rgb = o3d.geometry.Image(rgb_raw.astype(np.uint8))
+        depth = o3d.geometry.Image(depthmap.astype(np.float32))
+        # else:
+        #     depth_raw = cam.depth
+        #     if depth_raw is None:
+        #         depth_raw = np.empty((cam.image_height, cam.image_width))
 
-            # if self.config["Dataset"]["sensor_type"] == "monocular":
-            # depth_raw = (
-            #     np.ones_like(depth_raw)
-            #     + (np.random.randn(depth_raw.shape[0], depth_raw.shape[1]) - 0.5)
-            #     * 0.05
-            # ) * scale
+        #     # if self.config["Dataset"]["sensor_type"] == "monocular":
+        #     # depth_raw = (
+        #     #     np.ones_like(depth_raw)
+        #     #     + (np.random.randn(depth_raw.shape[0], depth_raw.shape[1]) - 0.5)
+        #     #     * 0.05
+        #     # ) * scale
             
-            depth_raw = (
-                np.ones_like(depth_raw) + (np.random.randn(depth_raw.shape[0], depth_raw.shape[1])) * 0.05
-            ) * scale
+        #     depth_raw = (
+        #         np.ones_like(depth_raw) + (np.random.randn(depth_raw.shape[0], depth_raw.shape[1])) * 0.05
+        #     ) * scale
 
-            rgb = o3d.geometry.Image(rgb_raw.astype(np.uint8))
-            depth = o3d.geometry.Image(depth_raw.astype(np.float32))
+        #     rgb = o3d.geometry.Image(rgb_raw.astype(np.uint8))
+        #     depth = o3d.geometry.Image(depth_raw.astype(np.float32))
 
-        return self.create_pcd_from_image_and_depth(
-            cam, cam_intrinsics, rgb, depth, init
+        res = self.create_pcd_from_image_and_depth(
+            cam, cam_intrinsics, rgb, depth, segmentation, init
         )
+        fused_point_cloud, features, scales, rots, opacities, ids = res
+        
+        return fused_point_cloud, features, scales, rots, opacities, ids
 
     def create_pcd_from_image_and_depth(
-        self, cam, cam_intrinsics, rgb, depth, init=False
+        self, cam, cam_intrinsics, rgb, depth, segmentation=None, init=False
     ):
         #
         # Log("Creating PCD from image and depth")
         if init:
             # Downsample factor for initialization
-            downsample_factor = self.config["Dataset"]["pcd_downsample_init"]
+            downsample_factor = 32  # self.config["Dataset"]["pcd_downsample_init"]
         else:
-            downsample_factor = self.config["Dataset"]["pcd_downsample"]
+            downsample_factor = 32  # self.config["Dataset"]["pcd_downsample"]
         # print("downsample_factor", downsample_factor)
 
-        point_size = self.config["Dataset"]["point_size"]
+        point_size = 0.01  # self.config["Dataset"]["point_size"]
 
-        if "adaptive_pointsize" in self.config["Dataset"]:
-            # print("using adaptive point size")
-            if self.config["Dataset"]["adaptive_pointsize"]:
-                point_size = min(0.05, point_size * np.median(depth))
+        # if "adaptive_pointsize" in self.config["Dataset"]:
+        # print("using adaptive point size")
+        # if self.config["Dataset"]["adaptive_pointsize"]:
+        point_size = min(0.05, point_size * np.median(depth))
 
         # print("point_size", point_size)
 
@@ -235,14 +250,18 @@ class GaussianModel:
                 (fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"
             )
         )
+        
+        # TODO: get ids from semantic segmentation
+        # get ids from semantic segmentation
+        ids = torch.zeros((opacities.shape[0]), device="cuda").int()
 
-        return fused_point_cloud, features, scales, rots, opacities
+        return fused_point_cloud, features, scales, rots, opacities, ids
 
     def init_lr(self, spatial_lr_scale):
         self.spatial_lr_scale = spatial_lr_scale
 
     def extend_from_pcd(
-        self, fused_point_cloud, features, scales, rots, opacities, kf_id
+        self, fused_point_cloud, features, scales, rots, opacities, ids, kf_id
     ):
         #
         Log("Extending PCD", tag="Backend")
@@ -257,6 +276,9 @@ class GaussianModel:
         new_scaling = nn.Parameter(scales.requires_grad_(True))
         new_rotation = nn.Parameter(rots.requires_grad_(True))
         new_opacity = nn.Parameter(opacities.requires_grad_(True))
+        
+        # TODO: get id from semantic segmentation
+        new_id = ids
 
         new_unique_kfIDs = torch.ones((new_xyz.shape[0])).int() * kf_id
         new_n_obs = torch.zeros((new_xyz.shape[0])).int()
@@ -267,6 +289,7 @@ class GaussianModel:
             new_opacity,
             new_scaling,
             new_rotation,
+            new_id=new_id,
             new_kf_ids=new_unique_kfIDs,
             new_n_obs=new_n_obs,
         )
@@ -274,13 +297,13 @@ class GaussianModel:
     def extend_from_pcd_seq(
         self, cam, cam_intrinsics, kf_id=-1, init=False, scale=2.0, depthmap=None
     ):
-        fused_point_cloud, features, scales, rots, opacities = (
+        fused_point_cloud, features, scales, rots, opacities, ids = (
             self.create_pcd_from_image(
                 cam, cam_intrinsics, init, scale=scale, depthmap=depthmap
             )
         )
         self.extend_from_pcd(
-            fused_point_cloud, features, scales, rots, opacities, kf_id
+            fused_point_cloud, features, scales, rots, opacities, ids, kf_id
         )
 
     def training_setup(self, training_args):
@@ -388,6 +411,8 @@ class GaussianModel:
         opacities = self._opacity.detach().cpu().numpy()
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
+        # TODO: store id
+        # object_id = self._id.detach().cpu().numpy()
 
         dtype_full = [
             (attribute, "f4") for attribute in self.construct_list_of_attributes()
@@ -556,6 +581,9 @@ class GaussianModel:
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
+        # 
+        self._id = self._id[valid_points_mask]
+        
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
         self.unique_kfIDs = self.unique_kfIDs[valid_points_mask.cpu()]
@@ -603,6 +631,7 @@ class GaussianModel:
         new_opacities,
         new_scaling,
         new_rotation,
+        new_id,
         new_kf_ids=None,
         new_n_obs=None,
     ):
@@ -623,11 +652,16 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
+        # 
+        self._id = torch.cat((self._id, new_id)).int()
+        
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        
         if new_kf_ids is not None:
             self.unique_kfIDs = torch.cat((self.unique_kfIDs, new_kf_ids)).int()
+            
         if new_n_obs is not None:
             self.n_obs = torch.cat((self.n_obs, new_n_obs)).int()
 
@@ -657,6 +691,9 @@ class GaussianModel:
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
+        
+        # 
+        new_id = self._id[selected_pts_mask].repeat(N)
 
         new_kf_id = self.unique_kfIDs[selected_pts_mask.cpu()].repeat(N)
         new_n_obs = self.n_obs[selected_pts_mask.cpu()].repeat(N)
@@ -668,6 +705,7 @@ class GaussianModel:
             new_opacity,
             new_scaling,
             new_rotation,
+            new_id=new_id,
             new_kf_ids=new_kf_id,
             new_n_obs=new_n_obs,
         )
@@ -698,6 +736,9 @@ class GaussianModel:
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
+        
+        #
+        new_id = self._id[selected_pts_mask]
 
         new_kf_id = self.unique_kfIDs[selected_pts_mask.cpu()]
         new_n_obs = self.n_obs[selected_pts_mask.cpu()]
@@ -708,6 +749,7 @@ class GaussianModel:
             new_opacities,
             new_scaling,
             new_rotation,
+            new_id=new_id,
             new_kf_ids=new_kf_id,
             new_n_obs=new_n_obs,
         )

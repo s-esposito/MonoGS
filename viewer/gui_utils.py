@@ -1,6 +1,7 @@
 import queue
 import numpy as np
 import open3d as o3d
+import open3d.visualization.rendering as rendering
 
 
 cv_gl = np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
@@ -39,10 +40,6 @@ class Frustum:
         self.center = center
         self.eye = eye
         self.up = up
-        
-    def update_color(self, color):
-        colors = [color for i in range(len(self.line_set.lines))]
-        self.line_set.colors = o3d.utility.Vector3dVector(colors)
 
 
 def create_frustum(
@@ -114,27 +111,29 @@ def get_latest_queue(q):
     return message
 
 
-# class Packet_vis2main:
-#     flag_pause = None
+class ViewerToMainPacket:
+    paused = None
 
 
 class ParamsGUI:
     def __init__(
         self,
         # pipe=None,
-        background=None,
-        gaussians=None,
-        cam_intrinsics=None,
-        q_main2vis=None,
-        # q_vis2main=None,
-        height_data=None,
-        width_data=None,
+        nr_objects,
+        background,
+        gaussians,
+        cam_intrinsics,
+        q_main2vis,
+        q_vis2main,
+        height_data,
+        width_data,
     ):
         # self.pipe = pipe
+        self.nr_objects = nr_objects
         self.background = background
         self.gaussians = gaussians
         self.cam_intrinsics = cam_intrinsics
         self.q_main2vis = q_main2vis
-        # self.q_vis2main = q_vis2main
+        self.q_vis2main = q_vis2main
         self.height_data = height_data
         self.width_data = width_data

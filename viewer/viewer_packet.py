@@ -7,15 +7,15 @@ from gaussian_splatting.utils.general_utils import (
 )
 
 
-class GaussianPacket:
+class MainToViewerPacket:
     def __init__(
         self,
         gaussians=None,
         cam_intrinsics=None,
         current_frame=None,
         current_frame_idx=None,
-        gtcolor=None,
-        gtdepth=None,
+        gt_rgb=None,
+        gt_depth=None,
         gtnormal=None,
         viewpoints=None,
         keyframes=None,
@@ -33,6 +33,7 @@ class GaussianPacket:
             self.get_rotation = gaussians.get_rotation.detach().clone()
             self.max_sh_degree = gaussians.max_sh_degree
             self.get_features = gaussians.get_features.detach().clone()
+            self.get_ids = gaussians.get_ids.detach().clone()
 
             self._rotation = gaussians._rotation.detach().clone()
             self.rotation_activation = torch.nn.functional.normalize
@@ -48,8 +49,8 @@ class GaussianPacket:
         self.viewpoints = viewpoints  # dict of CameraExtrinsics (all frames)
         self.keyframes = keyframes  # list of CameraExtrinsics (window)
 
-        self.gtcolor = self.resize_img(gtcolor, 320)
-        self.gtdepth = self.resize_img(gtdepth, 320)
+        self.gt_rgb = self.resize_img(gt_rgb, 320)
+        self.gt_depth = self.resize_img(gt_depth, 320)
         self.gtnormal = self.resize_img(gtnormal, 320)
 
         self.finish = finish

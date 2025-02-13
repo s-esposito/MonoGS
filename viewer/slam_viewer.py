@@ -2,7 +2,7 @@ import pathlib
 import threading
 import time
 from datetime import datetime
-
+from copy import deepcopy
 import cv2
 import glfw
 import imgviz
@@ -18,10 +18,10 @@ from gaussian_splatting.gaussian_renderer import render
 from gaussian_splatting.utils.graphics_utils import fov2focal, getWorld2View
 from viewer.gl_render.util import CameraGL
 from viewer.gl_render.util_gau import GaussianData
-from viewer.gl_render.render_ogl import OpenGLRenderer
-from viewer.gaussians_packet import GaussianPacket
+from viewer.gl_render.render_ogl import GaussiansRenderGL
+from viewer.viewer_packet import MainToViewerPacket
 from viewer.gui_utils import (
-    # Packet_vis2main,
+    ViewerToMainPacket,
     create_frustum,
     cv_gl,
     get_latest_queue,
@@ -43,8 +43,12 @@ class Viewer:
         self.window.set_on_layout(self._on_layout)
         self.window.set_on_close(self._on_close)
 
+        # 
+        self.selected_shader = "rgb"
+
         self.step = 0
         self.nr_frames = 0
+        self.nr_objects = 0
         self.cur_frame_idx = 0
         self.process_finished = False
         self.device = "cuda"
@@ -57,6 +61,8 @@ class Viewer:
         self.init_widget()
 
         self.q_main2vis = None
+        self.q_vis2main = None
+        
         self.gaussian_cur = None
         self.cam_intrinsics_cur = None
         # self.pipe = None
@@ -70,27 +76,31 @@ class Viewer:
         self.height_3d = self.window_h
 
         if params_gui is not None:
+            self.nr_objects = params_gui.nr_objects
             self.background = params_gui.background
             self.gaussian_cur = params_gui.gaussians
             self.cam_intrinsics_cur = params_gui.cam_intrinsics
             # self.init = True
             self.q_main2vis = params_gui.q_main2vis
-            # self.q_vis2main = params_gui.q_vis2main
+            self.q_vis2main = params_gui.q_vis2main
             # self.pipe = params_gui.pipe
+            
+        # generate nr objects random colors
+        self.colors_objects = torch.rand((self.nr_objects, 3), dtype=torch.float32, device="cuda")
+        # set 0 to black
+        self.colors_objects[0] = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32, device="cuda")
 
         Log(f"Viewer resolution {self.window_w}x{self.window_h}", tag="GUI")
         Log(f"Data resolution {self.width_3d}x{self.height_3d}", tag="GUI")
 
-        # self.gaussian_nums = []
-
         self.camera_gl = CameraGL(self.window_h, self.window_w)
         self.window_gl = self.init_glfw()
-        self.renderer_gl = OpenGLRenderer(self.camera_gl.w, self.camera_gl.h)
+        self.renderer_gl = GaussiansRenderGL(self.camera_gl.w, self.camera_gl.h)
 
         gl.glEnable(gl.GL_TEXTURE_2D)
         gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glDepthFunc(gl.GL_LEQUAL)
-        self.gaussians_gl = GaussianData(0, 0, 0, 0, 0)
+        self.gaussians_gl = None
 
         self.save_path = "."
         self.save_path = pathlib.Path(self.save_path)
@@ -113,7 +123,7 @@ class Viewer:
 
         self.lit = rendering.MaterialRecord()
         self.lit.shader = "unlitLine"
-
+        
         self.lit_geo = rendering.MaterialRecord()
         self.lit_geo.shader = "defaultUnlit"
 
@@ -130,10 +140,10 @@ class Viewer:
         margin = 0.5 * em
         self.panel = gui.Vert(0.5 * em, gui.Margins(margin))
         
-        # self.button = gui.ToggleSwitch("Resume/Pause")
-        # self.button.is_on = True
-        # self.button.set_on_clicked(self._on_button)
-        # self.panel.add_child(self.button)
+        self.button = gui.ToggleSwitch("Resume/Pause")
+        self.button.is_on = True
+        self.button.set_on_clicked(self._on_button)
+        self.panel.add_child(self.button)
 
         self.panel.add_child(gui.Label("Viewpoint Options"))
 
@@ -155,12 +165,12 @@ class Viewer:
 
         # Combo panels
         combo_tile = gui.Vert(0.5 * em, gui.Margins(margin))
-
+        combo_tile.add_child(gui.Label("Viewpoints"))
         # Jump to the camera viewpoint
         self.combo_kf = gui.Combobox()
         self.combo_kf.set_on_selection_changed(self._on_combo_kf)
-        combo_tile.add_child(gui.Label("Viewpoint list"))
         combo_tile.add_child(self.combo_kf)
+        
         vp_subtile2.add_child(combo_tile)
 
         viewpoint_tile.add_child(vp_subtile1)
@@ -194,25 +204,43 @@ class Viewer:
         # Rendering options
 
         self.panel.add_child(gui.Label("Rendering options"))
-        chbox_tile_geometry = gui.Horiz(0.5 * em, gui.Margins(margin))
+        # chbox_tile_geometry = gui.Horiz(0.5 * em, gui.Margins(margin))
 
-        self.depth_chbox = gui.Checkbox("Depth")
-        self.depth_chbox.checked = False
-        chbox_tile_geometry.add_child(self.depth_chbox)
+        # SHADERS
+        combo_tile_shaders = gui.Vert(0.5 * em, gui.Margins(margin))
+        combo_tile_shaders.add_child(gui.Label("Shaders"))
+        self.combo_shaders = gui.Combobox()
+        self.combo_shaders.set_on_selection_changed(self._on_combo_shaders)
+        # add items
+        self.combo_shaders.add_item("rgb")
+        self.combo_shaders.add_item("depth")
+        # self.combo_shaders.add_item("time")
+        self.combo_shaders.add_item("elipsoids")
+        self.combo_shaders.add_item("segmentation")
+        combo_tile_shaders.add_child(self.combo_shaders)
+        self.panel.add_child(combo_tile_shaders)
 
-        self.opacity_chbox = gui.Checkbox("Opacity")
-        self.opacity_chbox.checked = False
-        chbox_tile_geometry.add_child(self.opacity_chbox)
+        # self.depth_chbox = gui.Checkbox("Depth")
+        # self.depth_chbox.checked = False
+        # chbox_tile_geometry.add_child(self.depth_chbox)
 
-        self.time_shader_chbox = gui.Checkbox("Time Shader")
-        self.time_shader_chbox.checked = False
-        chbox_tile_geometry.add_child(self.time_shader_chbox)
+        # self.opacity_chbox = gui.Checkbox("Opacity")
+        # self.opacity_chbox.checked = False
+        # chbox_tile_geometry.add_child(self.opacity_chbox)
 
-        self.elipsoid_chbox = gui.Checkbox("Elipsoid Shader")
-        self.elipsoid_chbox.checked = False
-        chbox_tile_geometry.add_child(self.elipsoid_chbox)
+        # self.time_shader_chbox = gui.Checkbox("Time")
+        # self.time_shader_chbox.checked = False
+        # chbox_tile_geometry.add_child(self.time_shader_chbox)
 
-        self.panel.add_child(chbox_tile_geometry)
+        # self.elipsoid_chbox = gui.Checkbox("Elipsoids")
+        # self.elipsoid_chbox.checked = False
+        # chbox_tile_geometry.add_child(self.elipsoid_chbox)
+        
+        # self.segmentation_chbox = gui.Checkbox("Segmentation")
+        # self.segmentation_chbox.checked = False
+        # chbox_tile_geometry.add_child(self.segmentation_chbox)
+
+        # self.panel.add_child(chbox_tile_geometry)
         
         # Scaling slider
 
@@ -250,9 +278,11 @@ class Viewer:
         # input color/depth
         self.in_rgb_widget = gui.ImageWidget()
         self.in_depth_widget = gui.ImageWidget()
+        # self.in_segments_widget = gui.ImageWidget()
         tab_info.add_child(gui.Label("Input Color/Depth"))
         tab_info.add_child(self.in_rgb_widget)
         tab_info.add_child(self.in_depth_widget)
+        # tab_info.add_child(self.in_segments_widget)
 
         tabs.add_tab("Info", tab_info)
         self.panel.add_child(tabs)
@@ -296,27 +326,23 @@ class Viewer:
         H = self.cam_intrinsics_cur.height
         W = self.cam_intrinsics_cur.width
         frustum = create_frustum(
-            c2w, H=H, W=W, fx=fx, fy=fy, cx=cx, cy=cy, color=color, size=size
+            pose=c2w, H=H, W=W, fx=fx, fy=fy, cx=cx, cy=cy, color=color, size=size
         )
         # add to scene
         self.widget3d.scene.add_geometry(name, frustum.line_set, self.lit)
-        # else:
-        # # get frustum
-        # frustum = self.frustum_dict[name]
-        # # update color
-        # frustum.update_color(color)
-        # # remove geometry
-        # self.widget3d.scene.remove_geometry(name)
-        # # add geometry
-        # self.widget3d.scene.add_geometry(name, frustum.line_set, self.lit)
+        self.update_camera(name, frustum, c2w, color=color)
+        return frustum
+    
+    def update_camera(self, name, frustum, c2w, color=[0, 1, 0]):
         
         # update camera pose
         frustum.update_pose(c2w)
         self.widget3d.scene.set_geometry_transform(name, c2w.astype(np.float64))
         self.widget3d.scene.show_geometry(name, self.cameras_chbox.checked)
+        # update color
+        colors = [color for i in range(len(frustum.line_set.lines))]
+        frustum.line_set.colors = o3d.utility.Vector3dVector(colors)
         
-        return frustum
-
     def _on_layout(self, layout_context):
         contentRect = self.window.content_rect
         self.widget3d_width_ratio = 0.7
@@ -353,6 +379,9 @@ class Viewer:
         viewpoint = frustum.view_dir
 
         self.widget3d.look_at(viewpoint[0], viewpoint[1], viewpoint[2])
+        
+    def _on_combo_shaders(self, name, new_idx):
+        self.selected_shader = name
 
     def _on_cameras_chbox(self, is_checked, name=None):
         names = self.frustum_dict.keys() if name is None else [name]
@@ -394,17 +423,17 @@ class Viewer:
     #             else:
     #                 self.widget3d.scene.remove_geometry(name)
 
-    # def _on_button(self, is_on):
-    #     packet = Packet_vis2main()
-    #     packet.flag_pause = not self.button.is_on
-    #     self.q_vis2main.put(packet)
+    def _on_button(self, is_on):
+        packet = ViewerToMainPacket()
+        packet.paused = not self.button.is_on
+        self.q_vis2main.put(packet)
 
     # def _on_slider(self, value):
     #     packet = self.prepare_viz2main_packet()
     #     self.q_vis2main.put(packet)
 
     # def _on_render_btn(self):
-    #     packet = Packet_vis2main()
+    #     packet = ViewerToMainPacket()
     #     packet.flag_nextbatch = True
     #     self.q_vis2main.put(packet)
 
@@ -432,6 +461,7 @@ class Viewer:
         return cv2.resize(img, (width, height))
 
     def receive_data(self, q):
+        
         if q is None:
             return
 
@@ -509,14 +539,8 @@ class Viewer:
         # whole sequence viewpoints subset
         if gaussian_packet.viewpoints is not None:
             
-            # remove all previosly added frustums
-            for name in self.frustum_dict.keys():
-                self.widget3d.scene.remove_geometry(name)
-                # remove from combo_kf
-                self.combo_kf.remove_item(name)
-            self.frustum_dict = {}
-            
             for _, viewpoint in gaussian_packet.viewpoints.items():
+                
                 w2c = getWorld2View(viewpoint.R, viewpoint.T).cpu().numpy()
                 c2w = np.linalg.inv(w2c)
                 name = "viewpoint_{}".format(viewpoint.frame_idx)
@@ -526,26 +550,35 @@ class Viewer:
                     if viewpoint.frame_idx in gaussian_packet.kf_window:
                         # viewpoint is a keyframe
                         color = [1, 1, 0]
-                        
-                frustum = self.add_camera(
-                    c2w,
-                    name=name,
-                    color=color,
-                )
                 
-                # add to dictionary
-                self.frustum_dict[name] = frustum
-                # add new camera frustum to list
-                self.combo_kf.add_item(name)
-
-        if gaussian_packet.gtcolor is not None:
-            rgb = torch.clamp(gaussian_packet.gtcolor, min=0, max=1.0) * 255
+                # check if frustum already exists
+                if name not in self.frustum_dict.keys():
+                    
+                    frustum = self.add_camera(
+                        c2w,
+                        name=name,
+                        color=color,
+                    )
+                    
+                    # add to dictionary
+                    self.frustum_dict[name] = frustum
+                    # add new camera frustum to list
+                    self.combo_kf.add_item(name)
+                    
+                else:
+                    
+                    # update color and position
+                    frustum = self.frustum_dict[name]
+                    self.update_camera(name, frustum, c2w, color=color)
+                    
+        if gaussian_packet.gt_rgb is not None:
+            rgb = torch.clamp(gaussian_packet.gt_rgb, min=0, max=1.0) * 255
             rgb = rgb.byte().permute(1, 2, 0).contiguous().cpu().numpy()
             rgb = o3d.geometry.Image(rgb)
             self.in_rgb_widget.update_image(rgb)
 
-        if gaussian_packet.gtdepth is not None:
-            depth = gaussian_packet.gtdepth
+        if gaussian_packet.gt_depth is not None:
+            depth = gaussian_packet.gt_depth
             min_value = depth.min().item()
             max_value = depth.max().item()
             depth = imgviz.depth2rgb(
@@ -559,57 +592,15 @@ class Viewer:
 
         if gaussian_packet.finish:
             Log("Received terminate signal", tag="GUI")
-            # clean up the pipe
-            while not self.q_main2vis.empty():
-                self.q_main2vis.get()
+            # # clean up the pipe
+            # if self.q_main2vis is not None:
+            #     while not self.q_main2vis.empty():
+            #         self.q_main2vis.get()
             # while not self.q_vis2main.empty():
             #     self.q_vis2main.get()
             # self.q_vis2main = None
-            self.q_main2vis = None
+            # self.q_main2vis = None
             self.process_finished = True
-
-    # @staticmethod
-    # def depth_to_normal(points, k=3, d_min=1e-3, d_max=10.0):
-    #     k = (k - 1) // 2
-    #     # points: (B, 3, H, W)
-    #     b, _, h, w = points.size()
-    #     points_pad = F.pad(
-    #         points, (k, k, k, k), mode="constant", value=0
-    #     )  # (B, 3, k+H+k, k+W+k)
-    #     if d_max is not None:
-    #         valid_pad = (points_pad[:, 2:, :, :] > d_min) & (
-    #             points_pad[:, 2:, :, :] < d_max
-    #         )  # (B, 1, k+H+k, k+W+k)
-    #     else:
-    #         valid_pad = points_pad[:, 2:, :, :] > d_min
-    #     valid_pad = valid_pad.float()
-
-    #     # vertical vector (top - bottom)
-    #     vec_vert = (
-    #         points_pad[:, :, :h, k : w + k]
-    #         - points_pad[:, :, 2 * k : h + (2 * k), k : w + k]
-    #     )
-
-    #     # horizontal vector (left - right)
-    #     vec_hori = (
-    #         points_pad[:, :, k : h + k, :w]
-    #         - points_pad[:, :, k : h + k, 2 * k : w + (2 * k)]
-    #     )
-
-    #     # valid_mask
-    #     valid_mask = (
-    #         valid_pad[:, :, k : h + k, k : w + k]
-    #         * valid_pad[:, :, :h, k : w + k]
-    #         * valid_pad[:, :, 2 * k : h + (2 * k), k : w + k]
-    #         * valid_pad[:, :, k : h + k, :w]
-    #         * valid_pad[:, :, k : h + k, 2 * k : w + (2 * k)]
-    #     )
-    #     valid_mask = valid_mask > 0.5
-
-    #     # get cross product (B, 3, H, W)
-    #     cross_product = -torch.linalg.cross(vec_vert, vec_hori, dim=1)
-    #     normal = F.normalize(cross_product, p=2.0, dim=1, eps=1e-12)
-    #     return normal, valid_mask
 
     @staticmethod
     def vfov_to_hfov(vfov_deg, height, width):
@@ -618,67 +609,73 @@ class Viewer:
             2 * np.arctan(width * np.tan(np.deg2rad(vfov_deg) / 2) / height)
         )
 
-    def rasterise(self, current_cam, cam_intrinsics):
-        if (
-            self.time_shader_chbox.checked
-            and self.gaussian_cur is not None
-            # and type(self.gaussian_cur) == GaussianPacket
-        ):
-            features = self.gaussian_cur.get_features.clone()
-            kf_ids = self.gaussian_cur.unique_kfIDs.float()
-            rgb_kf = imgviz.depth2rgb(
-                kf_ids.view(-1, 1).cpu().numpy(), colormap="jet", dtype=np.float32
-            )
-            alpha = 0.1
-            self.gaussian_cur.get_features = alpha * features + (
-                1 - alpha
-            ) * torch.from_numpy(rgb_kf).to(features.device)
-
-        # render the scene
-        rendering_data = render(
-            current_cam,
-            cam_intrinsics,
-            self.gaussian_cur,
-            # self.pipe,
-            self.background,
-            self.scaling_slider.double_value,
-        )
-
-        if (
-            self.time_shader_chbox.checked
-            and self.gaussian_cur is not None
-            # and type(self.gaussian_cur) == GaussianPacket
-        ):
-            self.gaussian_cur.get_features = features
-
-        return rendering_data
-
     def render_o3d_image(self, results, current_cam, cam_intrinsics):
-        if self.depth_chbox.checked:
-            depth = results["depth"]
-            depth = depth[0, :, :].detach().cpu().numpy()
-            max_depth = np.max(depth)
-            depth = imgviz.depth2rgb(
-                depth, min_value=0.1, max_value=max_depth, colormap="jet"
+        
+        if self.selected_shader == "rgb":
+            
+            rgb = (
+                (torch.clamp(results["render"], min=0, max=1.0) * 255)
+                .byte()
+                .permute(1, 2, 0)
+                .contiguous()
+                .cpu()
+                .numpy()
             )
-            depth = torch.from_numpy(depth)
-            depth = torch.permute(depth, (2, 0, 1)).float()
-            depth = (depth).byte().permute(1, 2, 0).contiguous().cpu().numpy()
-            render_img = o3d.geometry.Image(depth)
+            render_img = o3d.geometry.Image(rgb)
+            
+        elif self.selected_shader == "depth":
+        
+            # depth = results["depth"]
+            # depth = depth[0, :, :].detach().cpu().numpy()
+            # max_depth = np.max(depth)
+            # depth = imgviz.depth2rgb(
+            #     depth, min_value=0.1, max_value=max_depth, colormap="jet"
+            # )
+            # depth = torch.from_numpy(depth)
+            # depth = torch.permute(depth, (2, 0, 1)).float()
+            # depth = (depth).byte().permute(1, 2, 0).contiguous().cpu().numpy()
+            # render_img = o3d.geometry.Image(depth)
+            
+            depth = results["depth"][0].detach().cpu().numpy()  # Remove unnecessary slicing
+            max_depth = depth.max()
 
-        elif self.opacity_chbox.checked:
-            opacity = results["opacity"]
-            opacity = opacity[0, :, :].detach().cpu().numpy()
-            max_opacity = np.max(opacity)
-            opacity = imgviz.depth2rgb(
-                opacity, min_value=0.0, max_value=max_opacity, colormap="jet"
-            )
-            opacity = torch.from_numpy(opacity)
-            opacity = torch.permute(opacity, (2, 0, 1)).float()
-            opacity = (opacity).byte().permute(1, 2, 0).contiguous().cpu().numpy()
-            render_img = o3d.geometry.Image(opacity)
+            # Convert depth to RGB directly
+            depth_rgb = imgviz.depth2rgb(depth, min_value=0.1, max_value=max_depth, colormap="jet")
 
-        elif self.elipsoid_chbox.checked:
+            # Ensure it's a contiguous array in (H, W, C) format for Open3D
+            depth_final = np.ascontiguousarray(depth_rgb.astype(np.uint8))
+
+            # Create Open3D image
+            render_img = o3d.geometry.Image(depth_final)
+
+        # elif self.selected_shader == "time":
+            
+        #     # opacity = results["opacity"]
+        #     # opacity = opacity[0, :, :].detach().cpu().numpy()
+        #     # max_opacity = np.max(opacity)
+        #     # opacity = imgviz.depth2rgb(
+        #     #     opacity, min_value=0.0, max_value=max_opacity, colormap="jet"
+        #     # )
+        #     # opacity = torch.from_numpy(opacity)
+        #     # opacity = torch.permute(opacity, (2, 0, 1)).float()
+        #     # opacity = (opacity).byte().permute(1, 2, 0).contiguous().cpu().numpy()
+        #     # render_img = o3d.geometry.Image(opacity)
+            
+        #     # Extract opacity and move to CPU & NumPy in one step
+        #     opacity = results["opacity"][0].detach().cpu().numpy()
+        #     max_opacity = opacity.max()
+
+        #     # Convert opacity to RGB using imgviz
+        #     opacity_rgb = imgviz.depth2rgb(opacity, min_value=0.0, max_value=max_opacity, colormap="jet")
+
+        #     # Ensure it's a contiguous array in (H, W, C) format for Open3D
+        #     opacity_final = np.ascontiguousarray(opacity_rgb.astype(np.uint8))
+
+        #     # Create Open3D image
+        #     render_img = o3d.geometry.Image(opacity_final)
+
+        elif self.selected_shader == "elipsoids":    
+
             if self.gaussian_cur is None:
                 return
             glfw.poll_events()
@@ -711,11 +708,14 @@ class Viewer:
             self.camera_gl.target = frustum.center.astype(np.float32)
             self.camera_gl.up = frustum.up.astype(np.float32)
 
-            self.gaussians_gl.xyz = self.gaussian_cur.get_xyz.cpu().numpy()
-            self.gaussians_gl.opacity = self.gaussian_cur.get_opacity.cpu().numpy()
-            self.gaussians_gl.scale = self.gaussian_cur.get_scaling.cpu().numpy()
-            self.gaussians_gl.rot = self.gaussian_cur.get_rotation.cpu().numpy()
-            self.gaussians_gl.sh = self.gaussian_cur.get_features.cpu().numpy()[:, 0, :]
+            self.gaussians_gl = GaussianData(
+                self.gaussian_cur.get_xyz.cpu().numpy(),
+                self.gaussian_cur.get_rotation.cpu().numpy(),
+                self.gaussian_cur.get_scaling.cpu().numpy(),
+                self.gaussian_cur.get_opacity.cpu().numpy(),
+                self.gaussian_cur.get_features.cpu().numpy()[:, 0, :],
+            )
+            # self.gaussians_gl.id = self.gaussian_cur.get_ids.cpu().numpy()
 
             self.update_activated_renderer_state(self.gaussians_gl)
             self.renderer_gl.sort_and_update(self.camera_gl)
@@ -728,7 +728,9 @@ class Viewer:
             img = cv2.flip(img, 0)
             render_img = o3d.geometry.Image(img)
             glfw.swap_buffers(self.window_gl)
-        else:
+
+        elif self.selected_shader == "segmentation":
+            
             rgb = (
                 (torch.clamp(results["render"], min=0, max=1.0) * 255)
                 .byte()
@@ -738,8 +740,62 @@ class Viewer:
                 .numpy()
             )
             render_img = o3d.geometry.Image(rgb)
+            
+        else:
+            
+            raise Exception("Unknown shader selected")
+        
         return render_img
 
+    @staticmethod
+    def rasterise(
+        selected_shader,
+        gaussians,
+        current_cam,
+        cam_intrinsics,
+        background,
+        colors_objects,
+        scaling: float
+    ):
+        
+        if selected_shader == "segmentation":
+            # 
+        
+        # TODO: enable again
+        # if (
+        #     self.selected_shader == "time"
+        #     and self.gaussian_cur is not None
+        #     # and type(self.gaussian_cur) == MainToViewerPacket
+        # ):
+        #     features = self.gaussian_cur.get_features.clone()  # rgb
+        #     kf_ids = self.gaussian_cur.unique_kfIDs.float()
+        #     rgb_kf = imgviz.depth2rgb(
+        #         kf_ids.view(-1, 1).cpu().numpy(), colormap="jet", dtype=np.float32
+        #     )
+        #     alpha = 0.1
+        #     self.gaussian_cur.get_features = alpha * features + (
+        #         1 - alpha
+        #     ) * torch.from_numpy(rgb_kf).to(features.device)
+
+        # render the scene
+        rendering_data = render(
+            current_cam,
+            cam_intrinsics,
+            gaussians,
+            # self.pipe,
+            background,
+            scaling,
+        )
+
+        # if (
+        #     self.selected_shader == "time"
+        #     and self.gaussian_cur is not None
+        #     # and type(self.gaussian_cur) == MainToViewerPacket
+        # ):
+        #     self.gaussian_cur.get_features = features
+
+        return rendering_data
+    
     def render_gui(self):
         
         w2c = cv_gl @ self.widget3d.scene.camera.get_view_matrix()
@@ -761,11 +817,27 @@ class Viewer:
         cx = width // 2
         cy = height // 2
         cam_intrinsics = CameraIntrinsics.init_from_gui(fx, fy, cx, cy, height, width)
-
-        results = self.rasterise(current_cam, cam_intrinsics)
+        
+        # render gaussians
+        results = self.rasterise(
+            self.selected_shader,
+            self.gaussian_cur,
+            current_cam,
+            cam_intrinsics,
+            self.background,
+            self.colors_objects,
+            self.scaling_slider.double_value
+        )
+        
         if results is None:
+            # no data to render
             return
-        self.render_img = self.render_o3d_image(results, current_cam, cam_intrinsics)
+        
+        self.render_img = self.render_o3d_image(
+            results,
+            current_cam,
+            cam_intrinsics
+        )
         self.widget3d.scene.set_background([0, 0, 0, 1], self.render_img)
 
     def scene_update(self):
@@ -774,8 +846,10 @@ class Viewer:
 
     def _update_thread(self):
         while True:
+            
             time.sleep(0.01)
-            self.step += 1
+            
+            # received terminate signal
             if self.process_finished:
                 o3d.visualization.gui.Application.instance.quit()
                 Log("Closing Visualization", tag="GUI")
@@ -788,8 +862,8 @@ class Viewer:
                 if self.step >= 1e9:
                     self.step = 0
 
+            # self.scene_update()
             gui.Application.instance.post_to_main_thread(self.window, update)
-
 
 def run(params_gui=None):
     app = o3d.visualization.gui.Application.instance
