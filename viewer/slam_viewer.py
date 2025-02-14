@@ -758,7 +758,7 @@ class Viewer:
         scaling: float
     ):
         
-        if selected_shader == "segmentation":
+        # if selected_shader == "segmentation":
             # 
         
         # TODO: enable again

@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import trimesh
 from PIL import Image
-from scipy.spatial.transform import Rotation
+from pyquaternion import Quaternion
 import itertools
 from io import StringIO
 
@@ -42,25 +42,25 @@ class KubricParser:
         positions = metadata["positions"]
         quaternions = metadata["quaternions"]
         for position, quat in zip(positions, quaternions):
-            # Convert quaternion from [w, x, y, z] to [x, y, z, w] for scipy
-            quat_scipy = np.concatenate([quat[1:], quat[:1]])
-            
-            # Compute the rotation matrix
-            rotation_matrix = Rotation.from_quat(quat_scipy).as_matrix()
-            
-            # Construct the transformation matrix
+            quat = Quaternion(quat)
+            rot = quat.rotation_matrix
+            # flip y and z axis
+            # rot = np.array([rot[0], -rot[2], -rot[1]])
+            # Construct the transformation matrix (c2w)
             T = np.eye(4)
-            T[:3, :3] = rotation_matrix
+            T[:3, :3] = rot
             T[:3, 3] = position
-            # rot = transform.Rotation.from_quat(quaternion)
-            # T = np.eye(4)
-            # T[:3, :3] = rot.as_matrix()
-            # T[:3, 3] = position
-            # T = trimesh.transformations.quaternion_matrix(np.roll(quaternion, 1))
-            # T = trimesh.transformations.quaternion_matrix(quaternion)
-            # T[:3, 3] = position
+            
+            local_transform = np.eye(4)
+            local_transform[:3, :3] = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
+            
+            T = T @ local_transform
+            
+            # Convert to w2c
+            T = np.linalg.inv(T)
+            # flip y and z axis
+            local_transform = np.array
             self.poses += [T]
-            # self.poses += [np.linalg.inv(T)]
 
         # list all files in datapath/rgb
         self.color_paths = sorted(glob.glob(f"{datapath}/rgba/*.png"))
