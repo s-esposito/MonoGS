@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import torch
 import trimesh
+from tqdm import tqdm
 from PIL import Image
 from pyquaternion import Quaternion
 import itertools
@@ -32,12 +33,12 @@ class KubricParser:
 
         # list all poses
         self.poses = []
-        
+
         # open datapath/metadata.json as dict
         json_path = os.path.join(datapath, "metadata.json")
         with open(json_path, "r") as f:
             metadata = json.load(f)
-        
+
         metadata = metadata["camera"]
         positions = metadata["positions"]
         quaternions = metadata["quaternions"]
@@ -50,12 +51,11 @@ class KubricParser:
             T = np.eye(4)
             T[:3, :3] = rot
             T[:3, 3] = position
-            
             local_transform = np.eye(4)
             local_transform[:3, :3] = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
-            
+
             T = T @ local_transform
-            
+
             # Convert to w2c
             T = np.linalg.inv(T)
             # flip y and z axis
@@ -293,8 +293,9 @@ class BaseDataset(torch.utils.data.Dataset):
         self.nr_objects = 1
         #
         self.nr_objects = 1
-        self.objects_ids = [0]
-        self.objects_names = ["bg"]
+        self.static_objects_ids = []
+        self.dynamic_objects_ids = []
+        self.masked_objects_ids = []
 
     def __len__(self):
         return self.num_imgs
@@ -308,6 +309,7 @@ class MonocularDataset(BaseDataset):
         super().__init__(args, path, config)
         calibration = config["Dataset"]["Calibration"]
         objects = config["Dataset"].get("Objects", None)
+
         # Camera prameters
         self.fx = calibration["fx"]
         self.fy = calibration["fy"]
@@ -347,18 +349,19 @@ class MonocularDataset(BaseDataset):
         self.segmentation_paths = []
         # objects (ids and names of segments)
         if objects is not None:
-            self.nr_objects = len(objects.keys())
-            self.objects_ids = [k for k in objects.keys()]
-            self.objects_names = [objects[k] for k in objects.keys()]
+            self.static_objects_ids = objects["static"]
+            self.dynamic_objects_ids = objects["dynamic"]
+            self.masked_objects_ids = objects["masked"]
+            self.nr_objects = len(self.static_objects_ids) + len(
+                self.dynamic_objects_ids
+            )
         # gt poses
         self.has_traj = True
         self.poses = []
         # depth parameters
         self.has_depth = False
         self.depth_paths = []
-        self.depth_scale = calibration.get(
-            "depth_scale", None
-        )
+        self.depth_scale = calibration.get("depth_scale", None)
 
         # # Default scene scale
         # nerf_normalization_radius = 5
@@ -369,19 +372,41 @@ class MonocularDataset(BaseDataset):
         #     },
         # }
         
-    def start_gt_traj_from_identity(self):
-        # get first pose
-        first_pose = self.poses[0]
+        self.preload = False
+        self.color_imgs = []
+        self.depth_imgs = []
+        self.segmentation_imgs = []
+            
+            
+    def load_data(self):
         
-        # compute all other poses as relative to the first pose
-        relative_poses = []
-        for pose in self.poses[1:]:
-            relative_poses.append(np.dot(np.linalg.inv(first_pose), pose))
+        self.preload = True
         
-        # recompute absolute poses from relative poses, now setting the first pose to identity
-        self.poses = [np.eye(4)]
-        for pose in relative_poses:
-            self.poses.append(pose)
+        for color_path in tqdm(self.color_paths, desc="Loading RGB"):
+            # remove alpha channel
+            self.color_imgs.append(np.array(Image.open(color_path))[..., :3])
+
+        if self.has_depth and self.use_depth:
+            for depth_path in tqdm(self.depth_paths, desc="Loading Depth"):
+                self.depth_imgs.append(np.array(Image.open(depth_path)) / self.depth_scale)
+                
+        if self.has_segmentation:
+            for segmentation_path in tqdm(self.segmentation_paths, desc="Loading Segmentation"):
+                self.segmentation_imgs.append(np.array(Image.open(segmentation_path)))
+            
+    # def start_gt_traj_from_identity(self):
+    #     # get first pose
+    #     first_pose = self.poses[0]
+
+    #     # compute all other poses as relative to the first pose
+    #     relative_poses = []
+    #     for pose in self.poses[1:]:
+    #         relative_poses.append(np.dot(np.linalg.inv(first_pose), pose))
+
+    #     # recompute absolute poses from relative poses, now setting the first pose to identity
+    #     self.poses = [np.eye(4)]
+    #     for pose in relative_poses:
+    #         self.poses.append(pose)
 
     def __getitem__(self, idx):
         color_path = self.color_paths[idx]
@@ -389,73 +414,98 @@ class MonocularDataset(BaseDataset):
         # gt pose if available
         if self.has_traj:
             pose = self.poses[idx]
-            pose = torch.from_numpy(pose).to(device=self.device)
         else:
             pose = None
 
         # rgb
-        image = np.array(Image.open(color_path))[..., :3]  # remove alpha channel
+        if self.preload:
+            image = self.color_imgs[idx]
+        else:
+            image = np.array(Image.open(color_path))[..., :3]  # remove alpha channel
 
         # depth
         if self.has_depth and self.use_depth:
-            depth_path = self.depth_paths[idx]
-            depth = np.array(Image.open(depth_path)) / self.depth_scale
+            if self.preload:
+                depth = self.depth_imgs[idx]
+            else:
+                depth_path = self.depth_paths[idx]
+                depth = np.array(Image.open(depth_path)) / self.depth_scale
         else:
             depth = None
 
         # segments to mask
         if self.has_segmentation:
-            segmentation_path = self.segmentation_paths[idx]
-            segmentation = np.array(Image.open(segmentation_path))
-            # mask = segmentation == 0
-            # get number of unique classes
-            # ids = np.unique(segmentation)
+            if self.preload:
+                segmentation = self.segmentation_imgs[idx]
+            else:
+                segmentation_path = self.segmentation_paths[idx]
+                segmentation = np.array(Image.open(segmentation_path))
         else:
             segmentation = None
-        # else:
-            # mask = None
 
-        # # apply mask
-        # if mask is not None:
-        #     # mask image
-        #     image[~mask] = 0
+        if self.has_segmentation:
+            # mask image
+            mask = np.ones_like(image[..., 0], dtype=np.bool)
+            for obj_id in self.masked_objects_ids:
+                mask[segmentation == obj_id] = False
 
         # undistort image
         if self.disorted:
             image = cv2.remap(image, self.map1x, self.map1y, cv2.INTER_LINEAR)
 
         # convert to tensor
+        
+        if pose is not None:
+            pose = torch.from_numpy(pose).to(device=self.device)
+        
         image = (
             torch.from_numpy(image / 255.0)
             .clamp(0.0, 1.0)
             .permute(2, 0, 1)
             .to(device=self.device, dtype=self.dtype)
         )
-        
-        print(f"Image shape: {image.shape}")
-        
+
         if depth is not None:
-            print(f"Depth shape: {depth.shape}, min: {depth.min()}, max: {depth.max()}")
-        else:
-            print("Depth shape: None")
-            
+            depth = torch.from_numpy(depth).to(device=self.device, dtype=self.dtype)
+
         if segmentation is not None:
-            print(f"Segmentation shape: {segmentation.shape}, unique classes: {np.unique(segmentation)}")
-        else:
-            print("Segmentation shape: None")    
-            
-        if pose is not None:
-            print(f"Pose shape: {pose.shape}")
-        else:
-            print("Pose shape: None")
+            segmentation = torch.from_numpy(segmentation).to(
+                device=self.device, dtype=torch.long
+            )
+
+        if mask is not None:
+            mask = torch.from_numpy(mask).to(device=self.device, dtype=torch.bool)
+
+        # print(f"Image shape: {image.shape}, min: {image.min()}, max: {image.max()}, dtype: {image.dtype}")
+
+        # if depth is not None:
+        #     print(f"Depth shape: {depth.shape}, min: {depth.min()}, max: {depth.max()}, dtype: {depth.dtype}")
+        # else:
+        #     print("Depth shape: None")
+
+        # if segmentation is not None:
+        #     print(f"Segmentation shape: {segmentation.shape}, unique classes: {torch.unique(segmentation)}, dtype: {segmentation.dtype}")
+        # else:
+        #     print("Segmentation shape: None")
+
+        # if mask is not None:
+        #     print(f"Mask shape: {mask.shape}, dtype: {mask.dtype}")
+        # else:
+        #     print("Mask shape: None")
+
+        # if pose is not None:
+        #     print(f"Pose shape: {pose.shape}, dtype: {pose.dtype}")
+        # else:
+        #     print("Pose shape: None")
 
         data = {
             "rgb": image,
             "depth": depth,
+            "mask": mask,
             "segmentation": segmentation,
             "pose": pose,
         }
-        
+
         return data
 
 
@@ -570,7 +620,7 @@ class StereoDataset(BaseDataset):
             .to(device=self.device, dtype=self.dtype)
         )
         pose = torch.from_numpy(pose).to(device=self.device)
-        
+
         data = {
             "rgb": image,
             "depth": depth,
@@ -600,9 +650,12 @@ class KubricDataset(MonocularDataset):
         print(f"Depth paths lenght: {len(self.depth_paths)}")
         print(f"Segmentation paths lenght: {len(self.segmentation_paths)}")
         print(f"Poses lenght: {len(self.poses)}")
-        # 
+        #
         print("Nr objects", self.nr_objects)
-        print("Objects IDs", self.objects_ids)
+        print("Static objects IDs", self.static_objects_ids)
+        print("Dynamic objects IDs", self.dynamic_objects_ids)
+        # 
+        self.load_data()
 
 
 class DavisDataset(MonocularDataset):
@@ -731,7 +784,7 @@ class RealsenseDataset(BaseDataset):
             self.depth_intrinsics = self.depth_profile.get_intrinsics()
 
     def __getitem__(self, idx):
-        
+
         pose = torch.eye(4, device=self.device, dtype=self.dtype)
         depth = None
 
@@ -758,7 +811,7 @@ class RealsenseDataset(BaseDataset):
             .permute(2, 0, 1)
             .to(device=self.device, dtype=self.dtype)
         )
-        
+
         data = {
             "rgb": image,
             "depth": depth,

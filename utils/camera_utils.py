@@ -85,6 +85,7 @@ class CameraExtrinsics(nn.Module):
         frame_idx: int,
         rgb,
         depth=None,
+        mask=None,
         segmentation=None,
         gt_pose=None,
         device="cuda:0",
@@ -105,7 +106,7 @@ class CameraExtrinsics(nn.Module):
             self.T_gt = gt_pose[:3, 3]
 
         self.rgb = rgb
-
+        self.mask = mask
         self.depth = depth
         self.segmentation = segmentation
         self.grad_mask = None
@@ -130,18 +131,24 @@ class CameraExtrinsics(nn.Module):
         frame_idx,
     ):
         data = dataset[frame_idx]
-        
+
         rgb = data.get("rgb")
         assert rgb is not None, "rgb is required"
-        
+
         segmentation = data.get("segmentation", None)
+        mask = data.get("mask", None)
         depth = data.get("depth", None)
         pose = data.get("pose", None)
-        
+
+        if mask is not None:
+            rgb = rgb * mask
+            depth = depth * mask
+
         return CameraExtrinsics(
             frame_idx,
             rgb=rgb,
             depth=depth,
+            mask=mask,
             segmentation=segmentation,
             gt_pose=pose,
             device=dataset.device,

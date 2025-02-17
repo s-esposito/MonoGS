@@ -20,13 +20,20 @@ from utils.camera_utils import (
     get_full_proj_transform,
 )
 from gaussian_splatting.scene.gaussian_model import GaussianModel
+
 # from gaussian_splatting.utils.sh_utils import eval_sh
 
 
 def render(
     viewpoint_camera: CameraExtrinsics,
     cam_intrinsics: CameraIntrinsics,
-    gaussians: GaussianModel,
+    # gaussians: GaussianModel,
+    means: torch.Tensor,  # xyz
+    rotations: torch.Tensor,  # rot
+    scales: torch.Tensor,  # scale
+    opacity: torch.Tensor,  # opacity
+    features: torch.Tensor,  # rgb or sh
+    active_sh_degree: int,
     # pipe,
     bg_color: torch.Tensor,
     scaling_modifier=1.0,
@@ -40,13 +47,11 @@ def render(
     """
 
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    if gaussians.get_xyz.shape[0] == 0:
+    if means.shape[0] == 0:
         return None
 
     screenspace_points = (
-        torch.zeros_like(
-            gaussians.get_xyz, dtype=gaussians.get_xyz.dtype, requires_grad=True, device="cuda"
-        )
+        torch.zeros_like(means, dtype=means.dtype, requires_grad=True, device="cuda")
         + 0
     )
     try:
@@ -73,52 +78,53 @@ def render(
         viewmatrix=viewpoint_camera.world_view_transform,
         projmatrix=full_proj_transform,
         projmatrix_raw=projection_matrix,
-        sh_degree=gaussians.active_sh_degree,
+        sh_degree=active_sh_degree,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=False,
     )
 
-    means3D = gaussians.get_xyz
+    means3D = means
     means2D = screenspace_points
-    opacity = gaussians.get_opacity
+    # opacity = opacity
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
-    scales = None
-    rotations = None
+    # scales = None
+    # rotations = None
     # cov3D_precomp = None
-    
+
     # if pipe.compute_cov3D_python:
     #     cov3D_precomp = gaussians.get_covariance(scaling_modifier)
     # else:
-    
+
     # check if the covariance is isotropic
-    if gaussians.get_scaling.shape[-1] == 1:
-        scales = gaussians.get_scaling.repeat(1, 3)
+    if scales.shape[-1] == 1:
+        scales = scales.repeat(1, 3)
     else:
-        scales = gaussians.get_scaling
-    rotations = gaussians.get_rotation
+        scales = scales
+    # rotations = gaussians.get_rotation
 
     # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
     # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
-    shs = None
-    colors_precomp = None
-    if colors_precomp is None:
-        # if pipe.convert_SHs_python:
-        #     shs_view = gaussians.get_features.transpose(1, 2).view(
-        #         -1, 3, (gaussians.max_sh_degree + 1) ** 2
-        #     )
-        #     dir_pp = gaussians.get_xyz - viewpoint_camera.camera_center.repeat(
-        #         gaussians.get_features.shape[0], 1
-        #     )
-        #     dir_pp_normalized = dir_pp / dir_pp.norm(dim=1, keepdim=True)
-        #     sh2rgb = eval_sh(gaussians.active_sh_degree, shs_view, dir_pp_normalized)
-        #     colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
-        # else:
-        shs = gaussians.get_features
-    else:
-        colors_precomp = override_color
+    # shs = None
+    # colors_precomp = None
+    # if colors_precomp is None:
+    #     # if pipe.convert_SHs_python:
+    #     #     shs_view = features.transpose(1, 2).view(
+    #     #         -1, 3, (gaussians.max_sh_degree + 1) ** 2
+    #     #     )
+    #     #     dir_pp = gaussians.get_xyz - viewpoint_camera.camera_center.repeat(
+    #     #         features.shape[0], 1
+    #     #     )
+    #     #     dir_pp_normalized = dir_pp / dir_pp.norm(dim=1, keepdim=True)
+    #     #     sh2rgb = eval_sh(gaussians.active_sh_degree, shs_view, dir_pp_normalized)
+    #     #     colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
+    #     # else:
+    #     shs = features
+    # else:
+    #     colors_precomp = override_color
+    shs = features
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -127,7 +133,7 @@ def render(
             means3D=means3D[mask],
             means2D=means2D[mask],
             shs=shs[mask],
-            colors_precomp=colors_precomp[mask] if colors_precomp is not None else None,
+            colors_precomp=None,  # colors_precomp[mask] if colors_precomp is not None else None,
             opacities=opacity[mask],
             scales=scales[mask],
             rotations=rotations[mask],
@@ -140,7 +146,7 @@ def render(
             means3D=means3D,
             means2D=means2D,
             shs=shs,
-            colors_precomp=colors_precomp,
+            colors_precomp=None,  # colors_precomp,
             opacities=opacity,
             scales=scales,
             rotations=rotations,

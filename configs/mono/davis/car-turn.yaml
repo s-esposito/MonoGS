@@ -17,5 +17,5 @@ Dataset:
     depth_scale: 1.0
     distorted: False
   Objects:
-    0: "background"
-    1: "object"
+    static: []
+    dynamic: [1]

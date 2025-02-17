@@ -21,7 +21,6 @@ class BackEnd(mp.Process):
         cam_intrinsics,
         opt_params,
         background,
-        cameras_extent,
         q_back2main,
         q_main2back,
     ):
@@ -32,16 +31,15 @@ class BackEnd(mp.Process):
         # self.pipeline_params = None
         self.opt_params = opt_params
         self.background = background
-        self.cameras_extent = cameras_extent
         self.q_back2main = q_back2main
         self.q_main2back = q_main2back
-        
-        # 
+
+        #
         # self.live_mode = False
 
         self.pause = False
-        self.device = "cuda"
-        self.dtype = torch.float32
+        self.device = "cuda:0"
+        # self.dtype = torch.float32
         # self.monocular = True  # config["Training"]["monocular"]
         self.nr_iters = 0
         self.last_sent = 0
@@ -52,44 +50,69 @@ class BackEnd(mp.Process):
         self.keyframe_optimizers = None
 
         Log("Created", tag="Backend")
+        
+        self.init()
 
     def set_hyperparams(self):
         self.save_results = self.config["Results"]["save_results"]
 
-        self.init_itr_num = self.config["Training"]["init_itr_num"]
-        self.init_gaussian_update = self.config["Training"]["init_gaussian_update"]
-        self.init_gaussian_reset = self.config["Training"]["init_gaussian_reset"]
-        self.init_gaussian_th = self.config["Training"]["init_gaussian_th"]
-        self.init_gaussian_extent = (
-            self.cameras_extent * self.config["Training"]["init_gaussian_extent"]
+        self.init_itr_num = 1050  # self.config["Training"]["init_itr_num"]
+        self.init_gaussian_update = (
+            100  # self.config["Training"]["init_gaussian_update"]
         )
-        self.mapping_itr_num = self.config["Training"]["mapping_itr_num"]
-        self.gaussian_update_every = self.config["Training"]["gaussian_update_every"]
-        self.gaussian_update_offset = self.config["Training"]["gaussian_update_offset"]
-        self.gaussian_th = self.config["Training"]["gaussian_th"]
-        self.gaussian_extent = (
-            self.cameras_extent * self.config["Training"]["gaussian_extent"]
+        self.init_gaussian_reset = 500  # self.config["Training"]["init_gaussian_reset"]
+        self.init_gaussian_th = 0.005  # self.config["Training"]["init_gaussian_th"]
+
+        self.cameras_extent = 1.0  # 6.0
+        self.init_gaussian_extent = self.cameras_extent * 30
+        # (
+        #     self.cameras_extent * self.config["Training"]["init_gaussian_extent"]
+        # )
+        self.mapping_itr_num = 150  # self.config["Training"]["mapping_itr_num"]
+        self.gaussian_update_every = (
+            150  # self.config["Training"]["gaussian_update_every"]
         )
-        self.gaussian_reset = self.config["Training"]["gaussian_reset"]
-        self.size_threshold = self.config["Training"]["size_threshold"]
-        self.window_size = self.config["Training"]["window_size"]
+        self.gaussian_update_offset = (
+            50  # self.config["Training"]["gaussian_update_offset"]
+        )
+        self.gaussian_th = 0.7  # self.config["Training"]["gaussian_th"]
+        self.gaussian_extent = self.cameras_extent * 1.0
+        # (
+        #     self.cameras_extent * self.config["Training"]["gaussian_extent"]
+        # )
+        self.gaussian_reset = 2001  # self.config["Training"]["gaussian_reset"]
+        self.size_threshold = 20  # self.config["Training"]["size_threshold"]
+        self.window_size = 8  # self.config["Training"]["window_size"]
         # self.single_thread = True
 
-    def add_next_kf(self, frame_idx, cur_viewpoint, depth_map, init=False, scale=1.0):
+    def add_next_kf(
+        self, frame_idx, cur_viewpoint, cur_depth, cur_segmentation, init=False
+    ):
         #
-        Log(f"Adding keyframe {frame_idx}, init: {init}, scale: {scale}", tag="Backend")
+        Log(f"Adding keyframe {frame_idx}, init: {init}", tag="Backend")
 
+        # check if the gaussians / camera intrinsics are initialized
         assert self.gaussians is not None, "Gaussians are not initialized"
         assert self.cam_intrinsics is not None, "Camera intrinsics are not initialized"
-        assert depth_map is not None, "Depth map is not given"
+        # assert params are given
+        assert cur_depth is not None, "Depth map is not given"
+        assert cur_segmentation is not None, "Segmentation is not given"
+        # assert cur_depth and cur_segmentation are torch tensors and on the same device
+        assert isinstance(cur_depth, torch.Tensor), "Depth map is not a torch tensor"
+        assert isinstance(
+            cur_segmentation, torch.Tensor
+        ), "Segmentation is not a torch tensor"
+        # assert cur_depth.device == self.device, f"Depth map device ({cur_depth.device}) is not {self.device}"
+        # assert cur_segmentation.device == self.device, f"Segmentation device ({cur_segmentation.device}) is not {self.device}"
 
         self.gaussians.extend_from_pcd_seq(
-            cur_viewpoint,
-            self.cam_intrinsics,
+            cam=cur_viewpoint,
+            cam_intrinsics=self.cam_intrinsics,
+            depth=cur_depth,
+            segmentation=cur_segmentation,
             kf_id=frame_idx,
             init=init,
-            scale=scale,
-            depthmap=depth_map,
+            # scale=scale,
         )
 
     def init(self):
@@ -102,15 +125,6 @@ class BackEnd(mp.Process):
         self.initialized = False  # not self.monocular
         self.keyframe_optimizers = None
 
-        # # remove all gaussians
-        # Log("Removing all gaussians", tag="Backend")
-        # self.gaussians.prune_points(self.gaussians.unique_kfIDs >= 0)
-
-        # # remove everything from the queues
-        # Log("Clearing the queues", tag="Backend")
-        # while not self.q_main2back.empty():
-        #     self.q_main2back.get()
-
     def initialize_map(self, cur_frame_idx, cur_viewpoint):
         #
         Log("Initializing the map", tag="Backend")
@@ -119,7 +133,12 @@ class BackEnd(mp.Process):
             render_pkg = render(
                 cur_viewpoint,
                 self.cam_intrinsics,
-                self.gaussians,
+                self.gaussians.get_xyz,
+                self.gaussians.get_rotation,
+                self.gaussians.get_scaling,
+                self.gaussians.get_opacity,
+                self.gaussians.get_features,
+                self.gaussians.active_sh_degree,
                 # self.pipeline_params,
                 self.background,
             )
@@ -216,7 +235,12 @@ class BackEnd(mp.Process):
                 render_pkg = render(
                     cur_viewpoint,
                     self.cam_intrinsics,
-                    self.gaussians,
+                    self.gaussians.get_xyz,
+                    self.gaussians.get_rotation,
+                    self.gaussians.get_scaling,
+                    self.gaussians.get_opacity,
+                    self.gaussians.get_features,
+                    self.gaussians.active_sh_degree,
                     # self.pipeline_params,
                     self.background,
                 )
@@ -240,13 +264,18 @@ class BackEnd(mp.Process):
                 )
 
                 loss_mapping += get_loss_mapping(
-                    self.config, image, depth, cur_viewpoint, opacity
+                    self.config,
+                    image,
+                    depth,
+                    cur_viewpoint,
+                    opacity,
+                    initialization=False,
                 )
                 viewspace_point_tensor_acm.append(viewspace_point_tensor)
                 visibility_filter_acm.append(visibility_filter)
                 radii_acm.append(radii)
                 n_touched_acm.append(n_touched)
-                
+
                 nr_mapping_iters += 1
 
             # Randomly sample two additional viewpoints
@@ -259,7 +288,12 @@ class BackEnd(mp.Process):
                 render_pkg = render(
                     cur_viewpoint,
                     self.cam_intrinsics,
-                    self.gaussians,
+                    self.gaussians.get_xyz,
+                    self.gaussians.get_rotation,
+                    self.gaussians.get_scaling,
+                    self.gaussians.get_opacity,
+                    self.gaussians.get_features,
+                    self.gaussians.active_sh_degree,
                     # self.pipeline_params,
                     self.background,
                 )
@@ -287,7 +321,7 @@ class BackEnd(mp.Process):
                 viewspace_point_tensor_acm.append(viewspace_point_tensor)
                 visibility_filter_acm.append(visibility_filter)
                 radii_acm.append(radii)
-                
+
                 nr_mapping_iters += 1
 
             scaling = self.gaussians.get_scaling
@@ -364,9 +398,7 @@ class BackEnd(mp.Process):
                     gaussian_split = True
 
                 # Opacity reset
-                if (self.nr_iters % self.gaussian_reset) == 0 and (
-                    not update_gaussian
-                ):
+                if (self.nr_iters % self.gaussian_reset) == 0 and (not update_gaussian):
                     Log("Resetting the opacity of non-visible Gaussians", tag="Backend")
                     self.gaussians.reset_opacity_nonvisible(visibility_filter_acm)
                     gaussian_split = True
@@ -375,7 +407,7 @@ class BackEnd(mp.Process):
                 self.gaussians.optimizer.step()
                 self.gaussians.optimizer.zero_grad(set_to_none=True)
                 self.gaussians.update_learning_rate(self.nr_iters)
-                # 
+                #
                 self.keyframe_optimizers.step()
                 self.keyframe_optimizers.zero_grad(set_to_none=True)
 
@@ -386,7 +418,7 @@ class BackEnd(mp.Process):
                     if cur_viewpoint.frame_idx == 0:
                         continue
                     update_pose(cur_viewpoint)
-            
+
         Log(f"Optimized map for {nr_mapping_iters} iters", tag="Backend")
 
         return gaussian_split
@@ -404,7 +436,12 @@ class BackEnd(mp.Process):
             render_pkg = render(
                 viewpoint_cam,
                 self.cam_intrinsics,
-                self.gaussians,
+                self.gaussians.get_xyz,
+                self.gaussians.get_rotation,
+                self.gaussians.get_scaling,
+                self.gaussians.get_opacity,
+                self.gaussians.get_features,
+                self.gaussians.active_sh_degree,
                 # self.pipeline_params,
                 self.background,
             )
@@ -428,7 +465,7 @@ class BackEnd(mp.Process):
                 self.gaussians.optimizer.step()
                 self.gaussians.optimizer.zero_grad(set_to_none=True)
                 self.gaussians.update_learning_rate(iteration)
-        
+
     def push_to_frontend(self, tag):
         # torch.cuda.synchronize()
         self.last_sent = 0
@@ -448,16 +485,14 @@ class BackEnd(mp.Process):
     def run(self):
 
         Log("Backend started", tag="Backend")
-        
-        self.init()
 
         while True:
 
             # if backend queue is empty, sleep for a while
             if self.q_main2back.empty():
-                
+
                 # Log("Queue empty", tag="Backend")
-                
+
                 if self.pause:
                     time.sleep(0.01)
                     continue
@@ -472,7 +507,7 @@ class BackEnd(mp.Process):
 
                 # optimize map if frontend queue is empty
                 # self.optimize_map(self.current_window, prune=False, iters=1)
-                
+
                 # TODO: needed?
                 # if self.last_sent >= 10:
                 #     self.optimize_map(self.current_window, prune=True, iters=10)
@@ -504,13 +539,26 @@ class BackEnd(mp.Process):
                     # initialize the map (first frame)
                     cur_frame_idx = data[1]
                     cur_viewpoint = data[2]
-                    depth_map = data[3]
+                    cur_depth = data[3]
+                    cur_segmentation = data[4]
 
+                    # print("cur_depth", cur_depth.shape, cur_depth.dtype, cur_depth.device)
+                    # print("cur_segmentation", cur_segmentation.shape, cur_segmentation.dtype, cur_segmentation.device)
+
+                    # add the first keyframe
                     self.viewpoints[cur_frame_idx] = cur_viewpoint
+                    #
                     self.add_next_kf(
-                        cur_frame_idx, cur_viewpoint, depth_map, init=True
+                        frame_idx=cur_frame_idx,
+                        cur_viewpoint=cur_viewpoint,
+                        cur_depth=cur_depth,
+                        cur_segmentation=cur_segmentation,
+                        init=True,
                     )
-                    self.initialize_map(cur_frame_idx, cur_viewpoint)
+                    #
+                    self.initialize_map(
+                        cur_frame_idx=cur_frame_idx, cur_viewpoint=cur_viewpoint
+                    )
                     # push results to frontend
                     self.push_to_frontend("init")
 
@@ -519,32 +567,42 @@ class BackEnd(mp.Process):
                     cur_frame_idx = data[1]
                     cur_viewpoint = data[2]
                     current_window = data[3]
-                    depth_map = data[4]
+                    cur_depth = data[4]
+                    cur_segmentation = data[5]
 
+                    # add the keyframe
                     self.viewpoints[cur_frame_idx] = cur_viewpoint
                     self.current_window = current_window
-                    self.add_next_kf(cur_frame_idx, cur_viewpoint, depth_map)
+
+                    #
+                    self.add_next_kf(
+                        cur_frame_idx,
+                        cur_viewpoint,
+                        cur_depth,
+                        cur_segmentation,
+                        init=False,
+                    )
 
                     opt_params = []
                     frames_to_optimize = self.config["Training"]["pose_window"]
                     iter_per_kf = self.mapping_itr_num  # if self.single_thread else 10
-                    if not self.initialized:
-                        if (
-                            len(self.current_window)
-                            == self.config["Training"]["window_size"]
-                        ):
-                            frames_to_optimize = (
-                                self.config["Training"]["window_size"] - 1
-                            )
-                            # iter_per_kf = 50 if self.live_mode else 300
-                            iter_per_kf = 300
-                            Log("Mapping", tag="Backend")
-                        else:
-                            iter_per_kf = self.mapping_itr_num
+                    # if not self.initialized:
+                    #     if (
+                    #         len(self.current_window)
+                    #         == self.config["Training"]["window_size"]
+                    #     ):
+                    #         frames_to_optimize = (
+                    #             self.config["Training"]["window_size"] - 1
+                    #         )
+                    #         # iter_per_kf = 50 if self.live_mode else 300
+                    #         iter_per_kf = 300
+                    #         Log("Mapping", tag="Backend")
+                    #     else:
+                    # iter_per_kf = self.mapping_itr_num
 
                     # iterate over the keyframes in the window
                     for cam_idx in range(len(self.current_window)):
-                        
+
                         # do not optimize the first frame
                         if self.current_window[cam_idx] == 0:
                             continue

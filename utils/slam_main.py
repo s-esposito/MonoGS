@@ -58,72 +58,18 @@ class Main(mp.Process):
 
         Log("Created", tag="Main")
 
+        self.init()
+        
     def set_hyperparams(self):
         self.save_dir = self.config["Results"]["save_dir"]
-        self.save_results = self.config["Results"]["save_results"]
-        self.save_trj = self.config["Results"]["save_trj"]
-        self.save_trj_kf_intv = self.config["Results"]["save_trj_kf_intv"]
+        self.save_results = True  # self.config["Results"]["save_results"]
+        self.save_trj = True  # self.config["Results"]["save_trj"]
+        self.save_trj_every = 10  # self.config["Results"]["save_trj_kf_intv"]
 
-        self.tracking_itr_num = self.config["Training"]["tracking_itr_num"]
-        self.kf_interval = self.config["Training"]["kf_interval"]
-        self.window_size = self.config["Training"]["window_size"]
+        self.tracking_itr_num = 100  # self.config["Training"]["tracking_itr_num"]
+        self.kf_interval = 5  # self.config["Training"]["kf_interval"]
+        self.window_size = 8  # self.config["Training"]["window_size"]
         #  self.single_thread = self.config["Training"]["single_thread"]
-
-    def add_new_keyframe(self, cur_frame_idx, depth=None, opacity=None):
-        rgb_boundary_threshold = self.config["Training"]["rgb_boundary_threshold"]
-        self.kf_indices.append(cur_frame_idx)
-        cur_viewpoint = self.cameras[cur_frame_idx]
-        gt_img = cur_viewpoint.rgb.cuda()
-        valid_rgb = (gt_img.sum(dim=0) > rgb_boundary_threshold)[None]
-        
-        if depth is None:
-            initial_depth = 2 * torch.ones(1, gt_img.shape[1], gt_img.shape[2])
-            initial_depth += torch.randn_like(initial_depth) * 0.3
-        else:
-            assert opacity is not None, "Opacity has to be given"
-            depth = depth.detach().clone()
-            opacity = opacity.detach()
-            # use_inv_depth = False
-            # if use_inv_depth:
-            #     inv_depth = 1.0 / depth
-            #     inv_median_depth, inv_std, valid_mask = get_median_depth(
-            #         inv_depth, opacity, mask=valid_rgb, return_std=True
-            #     )
-            #     invalid_depth_mask = torch.logical_or(
-            #         inv_depth > inv_median_depth + inv_std,
-            #         inv_depth < inv_median_depth - inv_std,
-            #     )
-            #     invalid_depth_mask = torch.logical_or(
-            #         invalid_depth_mask, ~valid_mask
-            #     )
-            #     inv_depth[invalid_depth_mask] = inv_median_depth
-            #     inv_initial_depth = inv_depth + torch.randn_like(
-            #         inv_depth
-            #     ) * torch.where(invalid_depth_mask, inv_std * 0.5, inv_std * 0.2)
-            #     initial_depth = 1.0 / inv_initial_depth
-            # else:
-            median_depth, std, valid_mask = get_median_depth(
-                depth, opacity, mask=valid_rgb, return_std=True
-            )
-            invalid_depth_mask = torch.logical_or(
-                depth > median_depth + std, depth < median_depth - std
-            )
-            invalid_depth_mask = torch.logical_or(
-                invalid_depth_mask, ~valid_mask
-            )
-            depth[invalid_depth_mask] = median_depth
-            initial_depth = depth + torch.randn_like(depth) * torch.where(
-                invalid_depth_mask, std * 0.5, std * 0.2
-            )
-
-            initial_depth[~valid_rgb] = 0  # Ignore the invalid rgb pixels
-
-        return initial_depth.cpu().numpy()[0]
-        
-        # # use the observed depth
-        # initial_depth = torch.from_numpy(cur_viewpoint.depth).unsqueeze(0)
-        # initial_depth[~valid_rgb.cpu()] = 0  # Ignore the invalid rgb pixels
-        # return initial_depth[0].numpy()
 
     def init(self):
         Log("Initializing", tag="Main")
@@ -173,29 +119,36 @@ class Main(mp.Process):
         pose_optimizer = torch.optim.Adam(opt_params)
 
         nr_tracking_iters = 0
-        pbar = tqdm(range(self.tracking_itr_num), desc=f"Tracking {cur_frame_idx}", disable=True)
+        pbar = tqdm(
+            range(self.tracking_itr_num), desc=f"Tracking {cur_frame_idx}", disable=True
+        )
         for tracking_itr in pbar:
-            
+
             render_pkg = render(
                 cur_viewpoint,
                 self.cam_intrinsics,
-                self.gaussians,
+                self.gaussians.get_xyz,
+                self.gaussians.get_rotation,
+                self.gaussians.get_scaling,
+                self.gaussians.get_opacity,
+                self.gaussians.get_features,
+                self.gaussians.active_sh_degree,
                 # self.pipeline_params,
                 self.background,
             )
-            
+
             image, depth, opacity = (
                 render_pkg["render"],
                 render_pkg["depth"],
                 render_pkg["opacity"],
             )
-            
+
             pose_optimizer.zero_grad()
-            
+
             loss_tracking = get_loss_tracking(
                 self.config, image, depth, opacity, cur_viewpoint
             )
-            
+
             loss_tracking.backward()
 
             with torch.no_grad():
@@ -203,26 +156,36 @@ class Main(mp.Process):
                 converged = update_pose(cur_viewpoint, converged_threshold=1e-4)
 
             if tracking_itr % 10 == 0:
-                gt_depth = cur_viewpoint.depth
                 if cur_viewpoint.depth is None:
                     gt_depth = np.zeros(
                         (self.cam_intrinsics.height, self.cam_intrinsics.width)
                     )
+                else:
+                    gt_depth = cur_viewpoint.depth.clone()
+                if cur_viewpoint.segmentation is None:
+                    gt_segments = np.zeros(
+                        (self.cam_intrinsics.height, self.cam_intrinsics.width)
+                    )
+                else:
+                    gt_segments = cur_viewpoint.segmentation.clone()
+                # Log("Sending to viewer", tag="Main")
                 self.q_main2vis.put(
                     MainToViewerPacket(
                         current_frame=cur_viewpoint,
                         current_frame_idx=cur_frame_idx,
-                        gt_rgb=cur_viewpoint.rgb,
+                        gt_rgb=cur_viewpoint.rgb.clone(),
                         gt_depth=gt_depth,
+                        gt_segments=gt_segments,
                     )
                 )
 
             #
             nr_tracking_iters += 1
-            
+
             if converged:
                 break
-        Log(f"Frame: {cur_frame_idx} tracked for {nr_tracking_iters} iters", tag="Main")
+
+        # Log(f"Frame: {cur_frame_idx} tracked for {nr_tracking_iters} iters", tag="Main")
 
         self.median_depth = get_median_depth(depth, opacity)
         return render_pkg
@@ -320,16 +283,23 @@ class Main(mp.Process):
     def request_stop(self):
         Log("Requesting backend stop", tag="Main")
         self.q_main2back.put(["stop"])
-    
-    def request_keyframe(self, cur_frame_idx, cur_viewpoint, depthmap):
+
+    def request_keyframe(self, cur_frame_idx, cur_viewpoint, depth, segmentation):
         Log("Requesting keyframe", tag="Main")
-        msg = ["keyframe", cur_frame_idx, cur_viewpoint, self.current_window, depthmap]
+        msg = [
+            "keyframe",
+            cur_frame_idx,
+            cur_viewpoint,
+            self.current_window,
+            depth,
+            segmentation,
+        ]
         self.q_main2back.put(msg)
         self.requested_keyframe = True
 
-    def request_init(self, cur_frame_idx, cur_viewpoint, depth_map):
+    def request_init(self, cur_frame_idx, cur_viewpoint, depth, segmentation):
         Log("Requesting initialization", tag="Main")
-        msg = ["init", cur_frame_idx, cur_viewpoint, depth_map]
+        msg = ["init", cur_frame_idx, cur_viewpoint, depth, segmentation]
         self.q_main2back.put(msg)
         self.requested_init = True
 
@@ -350,11 +320,76 @@ class Main(mp.Process):
         if cur_frame_idx % 10 == 0:
             torch.cuda.empty_cache()
 
+    def get_viewpoint_depth_and_segmentation(self, cur_frame_idx, cur_viewpoint):
+        # Initialise the frame at the ground truth pose
+        cur_viewpoint.update_RT(cur_viewpoint.R_gt, cur_viewpoint.T_gt)
+
+        self.kf_indices.append(cur_frame_idx)
+        cur_viewpoint = self.cameras[cur_frame_idx]
+
+        # get rgb
+        gt_img = cur_viewpoint.rgb
+        gt_img = gt_img.to(self.device)
+
+        # get mask
+        if cur_viewpoint.mask is not None:
+            mask = cur_viewpoint.mask
+        else:
+            mask = torch.ones_like(gt_img).bool()
+        mask = mask.to(self.device)
+
+        # get segmentation
+        if cur_viewpoint.segmentation is not None:
+            segmentation = cur_viewpoint.segmentation
+            assert isinstance(
+                segmentation, torch.Tensor
+            ), "Segmentation must be a tensor"
+        else:
+            segmentation = torch.zeros_like(mask).long()
+        segmentation = segmentation.to(self.device)
+
+        # get depth
+        if cur_viewpoint.depth is not None:
+            depth = cur_viewpoint.depth
+            assert isinstance(depth, torch.Tensor), "Depth must be a tensor"
+        else:
+            depth = None
+
+        # if opacity is None:
+        # opacity = torch.ones_like(depth)
+        # else:
+        # opacity = opacity.detach()
+
+        if depth is None:
+            depth = 2 * torch.ones(gt_img.shape[1], gt_img.shape[2])
+            depth += torch.randn_like(depth) * 0.3
+        else:
+            depth = depth.detach().clone()
+            median_depth, std, valid_mask = get_median_depth(
+                depth, opacity=None, mask=mask, return_std=True
+            )
+            invalid_depth_mask = torch.logical_or(
+                depth > median_depth + std, depth < median_depth - std
+            )
+            invalid_depth_mask = torch.logical_or(invalid_depth_mask, ~valid_mask)
+            depth[invalid_depth_mask] = median_depth
+            depth = depth + torch.randn_like(depth) * torch.where(
+                invalid_depth_mask, std * 0.5, std * 0.2
+            )
+
+            depth[~mask] = 0  # Ignore the invalid rgb pixels
+        depth = depth.to(self.device)
+
+        # print("rgb", gt_img.shape, gt_img.dtype, gt_img.device)
+        # print("depth", depth.shape, depth.dtype, depth.device)
+        # print("mask", mask.shape, mask.dtype, mask.device)
+        # print("segmentation", segmentation.shape, segmentation.dtype, segmentation.device)
+
+        return depth, segmentation
+
     def run(self):
 
         Log("Started", tag="Main")
-        
-        self.init()
 
         # tic = torch.cuda.Event(enable_timing=True)
         # toc = torch.cuda.Event(enable_timing=True)
@@ -362,13 +397,13 @@ class Main(mp.Process):
         # prec_frame_idx = -1
         cur_frame_idx = 0
         while True:
-            
+
             if cur_frame_idx >= len(self.dataset):
                 if not self.requested_stop:
                     self.request_stop()
                     self.requested_stop = True
-            
-            # 
+
+            #
             if self.q_vis2main is not None:
                 if self.q_vis2main.empty():
                     if self.pause:
@@ -386,9 +421,9 @@ class Main(mp.Process):
 
             # if the frontend queue is empty, do stuff
             if self.q_back2main.empty():
-                
+
                 # Log("Queue empty", tag="Main")
-                
+
                 # tic.record()
 
                 if self.requested_init:
@@ -400,11 +435,16 @@ class Main(mp.Process):
                     # waiting for the backend to add the keyframe
                     time.sleep(0.01)
                     continue
-                
+
                 if self.requested_stop:
                     # waiting for the backend to stop
                     time.sleep(0.01)
                     continue
+
+                Log(
+                    f"Processing frame: {cur_frame_idx}, lenght window {len(self.kf_indices)}",
+                    tag="Main",
+                )
 
                 cur_viewpoint = CameraExtrinsics.init_from_dataset(
                     self.dataset,
@@ -418,20 +458,20 @@ class Main(mp.Process):
 
                 # check if first frame
                 if cur_frame_idx == 0:
-                    
-                    # Initialise the frame at the ground truth pose
-                    cur_viewpoint.update_RT(cur_viewpoint.R_gt, cur_viewpoint.T_gt)
-                    
-                    depth_map = self.add_new_keyframe(cur_frame_idx)
-                    self.request_init(cur_frame_idx, cur_viewpoint, depth_map)
-                    
+
+                    depth, segmentation = self.get_viewpoint_depth_and_segmentation(
+                        cur_frame_idx, cur_viewpoint
+                    )
+
+                    self.request_init(cur_frame_idx, cur_viewpoint, depth, segmentation)
+
                     self.current_window.append(cur_frame_idx)
                     cur_frame_idx += 1
                     continue
 
-                # self.initialized = self.initialized or (
-                #     len(self.current_window) == self.window_size
-                # )
+                self.initialized = self.initialized or (
+                    len(self.current_window) == self.window_size
+                )
 
                 # Tracking
                 render_pkg = self.tracking(cur_frame_idx, cur_viewpoint)
@@ -440,18 +480,21 @@ class Main(mp.Process):
                 # current_window_dict = {}
                 # current_window_dict[self.current_window[0]] = self.current_window[1:]
                 # keyframes = [self.cameras[kf_idx] for kf_idx in self.current_window]
-                
+
                 # create a dict with viewpoints in current windows
-                viewpoints = {kf_idx: self.cameras[kf_idx] for kf_idx in self.current_window}
-                # TODO: unefficent way to add viewpoints ... slows viewer down 
+                viewpoints = {
+                    kf_idx: self.cameras[kf_idx] for kf_idx in self.current_window
+                }
+                # TODO: unefficent way to add viewpoints ... slows viewer down
                 # max_added_viewpoints = 100
                 # one_every = int(np.ceil(len(self.dataset) / max_added_viewpoints))
                 # for i in range(0, len(self.cameras), one_every):
                 #     if i not in viewpoints.keys():
                 #         viewpoints[i] = self.cameras[i]
-                
+
                 # add a new packet to the visualization queue
                 if self.q_main2vis is not None:
+                    # Log("Sending to viewer", tag="Main")
                     self.q_main2vis.put(
                         MainToViewerPacket(
                             gaussians=clone_obj(self.gaussians),
@@ -491,11 +534,12 @@ class Main(mp.Process):
                         check_time
                         and point_ratio < self.config["Training"]["kf_overlap"]
                     )
-                
+
                 # if self.single_thread:
                 create_kf = check_time and create_kf
-                
+
                 if create_kf:
+
                     self.current_window, removed = self.add_to_window(
                         cur_frame_idx,
                         curr_visibility,
@@ -508,43 +552,50 @@ class Main(mp.Process):
                     #         "Keyframes lacks sufficient overlap to init the map, resetting."
                     #     )
                     #     continue
-                    depth_map = self.add_new_keyframe(
-                        cur_frame_idx,
-                        depth=render_pkg["depth"],
-                        opacity=render_pkg["opacity"]
+                    # depth_map = self.add_new_keyframe(
+                    #     cur_frame_idx,
+                    #     depth=render_pkg["depth"],
+                    #     opacity=render_pkg["opacity"]
+                    # )
+
+                    depth, segmentation = self.get_viewpoint_depth_and_segmentation(
+                        cur_frame_idx, cur_viewpoint
                     )
-                    self.request_keyframe(cur_frame_idx, cur_viewpoint, depth_map)
-                
+
+                    self.request_keyframe(
+                        cur_frame_idx, cur_viewpoint, depth, segmentation
+                    )
+
                 else:
                     self.cleanup(cur_frame_idx)
-                
+
                 cur_frame_idx += 1
 
                 if (
-                    self.save_results
+                    self.dataset.has_traj
+                    and self.save_results
                     and self.save_trj
-                    and create_kf
-                    and len(self.kf_indices) % self.save_trj_kf_intv == 0
+                    and cur_frame_idx % self.save_trj_every == 0
                 ):
                     # skip this if the dataset does not have gt poses
-                    if self.dataset.has_traj:
-                        Log("Evaluating ATE at frame: ", cur_frame_idx, tag="Eval")
-                        eval_ate(
-                            self.cameras,
-                            self.kf_indices,
-                            self.save_dir,
-                            cur_frame_idx,
-                            monocular=True,  # self.monocular,
-                        )
-                
+                    Log("Evaluating ATE at frame: ", cur_frame_idx, tag="Eval")
+                    eval_ate(
+                        frames=self.cameras,
+                        kf_ids=None,  # self.kf_indices,
+                        save_dir=self.save_dir,
+                        latest_frame_idx=cur_frame_idx,
+                        final=False,
+                        # monocular=True,  # self.monocular,
+                    )
+
                 # toc.record()
-                
+
             else:
 
                 # if frontend queue is not empty, sync with backend
 
                 data = self.q_back2main.get()
-                
+
                 if data[0] == "sync_backend":
                     self.sync_from_backend(data)
 
@@ -555,30 +606,28 @@ class Main(mp.Process):
                 elif data[0] == "init":
                     self.sync_from_backend(data)
                     self.requested_init = False
-                    
+
                 elif data[0] == "stop":
                     self.sync_from_backend(data)
                     self.requested_stop = False
                     break
-        
-        # 
+
+        #
         Log("Finished", tag="Main")
-        
+
         if self.save_results:
-            
+
             # skip this if the dataset does not have gt poses
             if self.dataset.has_traj:
                 Log("Evaluating ATE at frame: ", cur_frame_idx, tag="Eval")
                 eval_ate(
-                    self.cameras,
-                    self.kf_indices,
-                    self.save_dir,
-                    0,
+                    frames=self.cameras,
+                    kf_ids=None,  # self.kf_indices,
+                    save_dir=self.save_dir,
+                    latest_frame_idx=len(self.dataset) - 1,
                     final=True,
-                    monocular=True  # self.monocular,
+                    # monocular=True  # self.monocular,
                 )
-            
+
             # save the final gaussians
-            save_gaussians(
-                self.gaussians, self.save_dir, "final", final=True
-            )
+            save_gaussians(self.gaussians, self.save_dir, "final", final=True)

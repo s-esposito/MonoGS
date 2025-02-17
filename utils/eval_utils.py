@@ -23,14 +23,15 @@ from utils.logging_utils import Log
 
 
 def evaluate_evo(poses_gt, poses_est, plot_dir, label, monocular=False):
-    ## Plot
+    # Plot
     traj_ref = PosePath3D(poses_se3=poses_gt)
     traj_est = PosePath3D(poses_se3=poses_est)
-    traj_est_aligned = trajectory.align_trajectory(
-        traj_est, traj_ref, correct_scale=monocular
-    )
+    # traj_est_aligned = trajectory.align_trajectory(
+    #     traj_est, traj_ref, correct_scale=monocular
+    # )
+    traj_est_aligned = traj_est
 
-    ## RMSE
+    # RMSE
     pose_relation = metrics.PoseRelation.translation_part
     data = (traj_ref, traj_est_aligned)
     ape_metric = metrics.APE(pose_relation)
@@ -49,8 +50,11 @@ def evaluate_evo(poses_gt, poses_est, plot_dir, label, monocular=False):
     plot_mode = evo.tools.plot.PlotMode.xy
     fig = plt.figure()
     ax = evo.tools.plot.prepare_axis(fig, plot_mode)
-    ax.set_title(f"ATE RMSE: {ape_stat}")
+
+    ax.set_title(f"ATE RMSE: {ape_stat}, {label}")
     evo.tools.plot.traj(ax, plot_mode, traj_ref, "--", "gray", "gt")
+
+    # evo.tools.plot.traj(ax, plot_mode, traj_est_aligned, "-", "blue", "est")
     # evo.tools.plot.traj_colormap(
     #     ax,
     #     traj_est_aligned,
@@ -59,19 +63,30 @@ def evaluate_evo(poses_gt, poses_est, plot_dir, label, monocular=False):
     #     min_map=ape_stats["min"],
     #     max_map=ape_stats["max"],
     # )
+
+    evo.tools.plot.traj(ax, plot_mode, traj_ref, style="--", alpha=0.5)
+    evo.tools.plot.traj_colormap(
+        ax,
+        traj_est_aligned,
+        ape_metric.error,
+        plot_mode,
+        min_map=ape_stats["min"],
+        max_map=ape_stats["max"],
+    )
+
     ax.legend()
+
     plt.savefig(os.path.join(plot_dir, "evo_2dplot_{}.png".format(str(label))), dpi=90)
     plt.close()
 
     return ape_stat
 
 
-def eval_ate(frames, kf_ids, save_dir, iterations, final=False, monocular=False):
-    #
-    Log("Evaluating ATE")
-    #
+def eval_ate(
+    frames, save_dir, latest_frame_idx, kf_ids=None, final=False, monocular=False
+):
 
-    latest_frame_idx = kf_ids[-1] + 2 if final else kf_ids[-1] + 1
+    # latest_frame_idx = kf_ids[-1] + 2 if final else kf_ids[-1] + 1
     trj_id, trj_est, trj_gt = [], [], []
     trj_est_np, trj_gt_np = [], []
 
@@ -81,25 +96,34 @@ def eval_ate(frames, kf_ids, save_dir, iterations, final=False, monocular=False)
         pose[0:3, 3] = T.cpu().numpy()
         return pose
 
-    # iterate over keyframes
-    for kf_id in kf_ids:
-
-        # get keyframe data
-        kf = frames[kf_id]
-        trj_id.append(frames[kf_id].frame_idx)
-
-        # get estimated pose
-        pose_est = np.linalg.inv(gen_pose_matrix(kf.R, kf.T))
-        trj_est.append(pose_est.tolist())
-        trj_est_np.append(pose_est)
-
-        # get ground truth pose (if available)
-        if kf.R_gt is None or kf.T_gt is None:
-            pose_gt = None
-        else:
-            pose_gt = np.linalg.inv(gen_pose_matrix(kf.R_gt, kf.T_gt))
-            trj_gt.append(pose_gt.tolist())
-            trj_gt_np.append(pose_gt)
+    if kf_ids is None:
+        # iterate over ALL frames
+        for i in range(latest_frame_idx):
+            # get frame data
+            kf = frames[i]
+            trj_id.append(frames[i].frame_idx)
+            # get estimated pose
+            c2w_est = np.linalg.inv(gen_pose_matrix(kf.R, kf.T))
+            trj_est.append(c2w_est.tolist())
+            trj_est_np.append(c2w_est)
+            # get gt pose
+            c2w_gt = np.linalg.inv(gen_pose_matrix(kf.R_gt, kf.T_gt))
+            trj_gt.append(c2w_gt.tolist())
+            trj_gt_np.append(c2w_gt)
+    else:
+        # iterate over keyframes
+        for kf_id in kf_ids:
+            # get keyframe data
+            kf = frames[kf_id]
+            trj_id.append(frames[kf_id].frame_idx)
+            # get estimated pose
+            c2w_est = np.linalg.inv(gen_pose_matrix(kf.R, kf.T))  # c2w
+            trj_est.append(c2w_est.tolist())
+            trj_est_np.append(c2w_est)
+            # get gt pose
+            c2w_gt = np.linalg.inv(gen_pose_matrix(kf.R_gt, kf.T_gt))
+            trj_gt.append(c2w_gt.tolist())
+            trj_gt_np.append(c2w_gt)
 
     # dump trajectory data to json
     trj_data = dict()
@@ -108,7 +132,7 @@ def eval_ate(frames, kf_ids, save_dir, iterations, final=False, monocular=False)
     trj_data["trj_gt"] = trj_gt
     plot_dir = os.path.join(save_dir, "plot")
     mkdir_p(plot_dir)
-    label_evo = "final" if final else "{:04}".format(iterations)
+    label_evo = "final" if final else "{:04}".format(latest_frame_idx)
     with open(
         os.path.join(plot_dir, f"trj_{label_evo}.json"), "w", encoding="utf-8"
     ) as f:
@@ -159,9 +183,14 @@ def eval_rendering(
 
         rendering = render(
             frame,
-            gaussians,
+            gaussians.get_xyz,
+            gaussians.get_rotation,
+            gaussians.get_scaling,
+            gaussians.get_opacity,
+            gaussians.get_features,
+            gaussians.active_sh_degree,
             # pipe,
-            background
+            background,
         )["render"]
         image = torch.clamp(rendering, 0.0, 1.0)
 
