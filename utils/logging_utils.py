@@ -4,16 +4,16 @@ _log_styles = {
     "MonoGS": "bold green",
     "GUI": "bold magenta",
     "Eval": "bold red",
-    "Backend": "bold blue",
-    "Main": "bold cyan",
+    "Mapper": "bold blue",
+    "Tracker": "bold cyan",
 }
 
 _log_quiet = {
     "MonoGS": False,
     "GUI": False,
     "Eval": False,
-    "Backend": False,
-    "Main": False,
+    "Mapper": False,
+    "Tracker": False,
 }
 
 

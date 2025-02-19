@@ -290,12 +290,10 @@ class BaseDataset(torch.utils.data.Dataset):
         self.device = "cuda:0"
         self.dtype = torch.float32
         self.num_imgs = 999999
-        self.nr_objects = 1
-        #
-        self.nr_objects = 1
-        self.static_objects_ids = []
-        self.dynamic_objects_ids = []
-        self.masked_objects_ids = []
+        # objects
+        self.static_objects_idxs = []
+        self.dynamic_objects_idxs = []
+        self.masked_objects_idxs = []
 
     def __len__(self):
         return self.num_imgs
@@ -347,14 +345,12 @@ class MonocularDataset(BaseDataset):
         # segmentation masks
         self.has_segmentation = False
         self.segmentation_paths = []
-        # objects (ids and names of segments)
+        # objects (idx and names of segments)
         if objects is not None:
-            self.static_objects_ids = objects["static"]
-            self.dynamic_objects_ids = objects["dynamic"]
-            self.masked_objects_ids = objects["masked"]
-            self.nr_objects = len(self.static_objects_ids) + len(
-                self.dynamic_objects_ids
-            )
+            self.static_objects_idxs = objects["static"]
+            self.dynamic_objects_idxs = objects["dynamic"]
+            self.masked_objects_idxs = objects["masked"]
+
         # gt poses
         self.has_traj = True
         self.poses = []
@@ -446,8 +442,8 @@ class MonocularDataset(BaseDataset):
         if self.has_segmentation:
             # mask image
             mask = np.ones_like(image[..., 0], dtype=np.bool)
-            for obj_id in self.masked_objects_ids:
-                mask[segmentation == obj_id] = False
+            for obj_idx in self.masked_objects_idxs:
+                mask[segmentation == obj_idx] = False
 
         # undistort image
         if self.disorted:
@@ -651,9 +647,9 @@ class KubricDataset(MonocularDataset):
         print(f"Segmentation paths lenght: {len(self.segmentation_paths)}")
         print(f"Poses lenght: {len(self.poses)}")
         #
-        print("Nr objects", self.nr_objects)
-        print("Static objects IDs", self.static_objects_ids)
-        print("Dynamic objects IDs", self.dynamic_objects_ids)
+        print("Static objects IDs", self.static_objects_idxs)
+        print("Dynamic objects IDs", self.dynamic_objects_idxs)
+        print("Nr dyn objects", len(self.dynamic_objects_idxs))
         # 
         self.load_data()
 

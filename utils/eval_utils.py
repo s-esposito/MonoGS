@@ -15,6 +15,7 @@ from matplotlib import pyplot as plt
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 import wandb
+import copy
 from gaussian_splatting.gaussian_renderer import render
 from gaussian_splatting.utils.image_utils import psnr
 from gaussian_splatting.utils.loss_utils import ssim
@@ -22,71 +23,11 @@ from gaussian_splatting.utils.system_utils import mkdir_p
 from utils.logging_utils import Log
 
 
-def evaluate_evo(poses_gt, poses_est, plot_dir, label, monocular=False):
-    # Plot
-    traj_ref = PosePath3D(poses_se3=poses_gt)
-    traj_est = PosePath3D(poses_se3=poses_est)
-    # traj_est_aligned = trajectory.align_trajectory(
-    #     traj_est, traj_ref, correct_scale=monocular
-    # )
-    traj_est_aligned = traj_est
-
-    # RMSE
-    pose_relation = metrics.PoseRelation.translation_part
-    data = (traj_ref, traj_est_aligned)
-    ape_metric = metrics.APE(pose_relation)
-    ape_metric.process_data(data)
-    ape_stat = ape_metric.get_statistic(metrics.StatisticsType.rmse)
-    ape_stats = ape_metric.get_all_statistics()
-    Log("RMSE ATE \[m]", ape_stat, tag="Eval")
-
-    with open(
-        os.path.join(plot_dir, "stats_{}.json".format(str(label))),
-        "w",
-        encoding="utf-8",
-    ) as f:
-        json.dump(ape_stats, f, indent=4)
-
-    plot_mode = evo.tools.plot.PlotMode.xy
-    fig = plt.figure()
-    ax = evo.tools.plot.prepare_axis(fig, plot_mode)
-
-    ax.set_title(f"ATE RMSE: {ape_stat}, {label}")
-    evo.tools.plot.traj(ax, plot_mode, traj_ref, "--", "gray", "gt")
-
-    # evo.tools.plot.traj(ax, plot_mode, traj_est_aligned, "-", "blue", "est")
-    # evo.tools.plot.traj_colormap(
-    #     ax,
-    #     traj_est_aligned,
-    #     ape_metric.error,
-    #     plot_mode,
-    #     min_map=ape_stats["min"],
-    #     max_map=ape_stats["max"],
-    # )
-
-    evo.tools.plot.traj(ax, plot_mode, traj_ref, style="--", alpha=0.5)
-    evo.tools.plot.traj_colormap(
-        ax,
-        traj_est_aligned,
-        ape_metric.error,
-        plot_mode,
-        min_map=ape_stats["min"],
-        max_map=ape_stats["max"],
-    )
-
-    ax.legend()
-
-    plt.savefig(os.path.join(plot_dir, "evo_2dplot_{}.png".format(str(label))), dpi=90)
-    plt.close()
-
-    return ape_stat
-
-
-def eval_ate(
-    frames, save_dir, latest_frame_idx, kf_ids=None, final=False, monocular=False
+def eval_traj_ate(
+    frames, save_dir, latest_frame_idx, kf_idxs=None, final=False, correct_scale=False
 ):
 
-    # latest_frame_idx = kf_ids[-1] + 2 if final else kf_ids[-1] + 1
+    # latest_frame_idx = kf_idxs[-1] + 2 if final else kf_idxs[-1] + 1
     trj_id, trj_est, trj_gt = [], [], []
     trj_est_np, trj_gt_np = [], []
 
@@ -96,7 +37,7 @@ def eval_ate(
         pose[0:3, 3] = T.cpu().numpy()
         return pose
 
-    if kf_ids is None:
+    if kf_idxs is None:
         # iterate over ALL frames
         for i in range(latest_frame_idx):
             # get frame data
@@ -112,10 +53,10 @@ def eval_ate(
             trj_gt_np.append(c2w_gt)
     else:
         # iterate over keyframes
-        for kf_id in kf_ids:
+        for kf_idx in kf_idxs:
             # get keyframe data
-            kf = frames[kf_id]
-            trj_id.append(frames[kf_id].frame_idx)
+            kf = frames[kf_idx]
+            trj_id.append(frames[kf_idx].frame_idx)
             # get estimated pose
             c2w_est = np.linalg.inv(gen_pose_matrix(kf.R, kf.T))  # c2w
             trj_est.append(c2w_est.tolist())
@@ -132,9 +73,9 @@ def eval_ate(
     trj_data["trj_gt"] = trj_gt
     plot_dir = os.path.join(save_dir, "plot")
     mkdir_p(plot_dir)
-    label_evo = "final" if final else "{:04}".format(latest_frame_idx)
+    label = "final" if final else "{:04}".format(latest_frame_idx)
     with open(
-        os.path.join(plot_dir, f"trj_{label_evo}.json"), "w", encoding="utf-8"
+        os.path.join(plot_dir, f"trj_{label}.json"), "w", encoding="utf-8"
     ) as f:
         json.dump(trj_data, f, indent=4)
 
@@ -143,15 +84,46 @@ def eval_ate(
         Log("No GT poses found, skipping ATE evaluation", tag="Eval")
         return np.inf
     else:
-        ate = evaluate_evo(
-            poses_gt=trj_gt_np,
-            poses_est=trj_est_np,
-            plot_dir=plot_dir,
-            label=label_evo,
-            monocular=monocular,
+        # Plot
+        traj_ref = PosePath3D(poses_se3=trj_gt_np)
+        traj_est = PosePath3D(poses_se3=trj_est_np)
+        traj_est_aligned = copy.deepcopy(traj_est)
+        traj_est_aligned.align(traj_ref, correct_scale=correct_scale, correct_only_scale=False)
+        traj_est_aligned = traj_est
+        # RMSE
+        pose_relation = metrics.PoseRelation.translation_part
+        data = (traj_ref, traj_est_aligned)
+        ape_metric = metrics.APE(pose_relation)
+        ape_metric.process_data(data)
+        ape_stat = ape_metric.get_statistic(metrics.StatisticsType.rmse)
+        ape_stats = ape_metric.get_all_statistics()
+        Log("RMSE ATE \[m]", ape_stat, tag="Eval")
+        # dump
+        with open(
+            os.path.join(plot_dir, "stats_{}.json".format(str(label))),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            json.dump(ape_stats, f, indent=4)
+        # plot
+        plot_mode = evo.tools.plot.PlotMode.xy
+        fig = plt.figure()
+        ax = evo.tools.plot.prepare_axis(fig, plot_mode)
+        ax.set_title(f"ATE RMSE: {ape_stat}, {label}")
+        evo.tools.plot.traj(ax, plot_mode, traj_ref, style="--", alpha=0.5)
+        evo.tools.plot.traj_colormap(
+            ax,
+            traj_est_aligned,
+            ape_metric.error,
+            plot_mode,
+            min_map=ape_stats["min"],
+            max_map=ape_stats["max"],
         )
-        wandb.log({"frame_idx": latest_frame_idx, "ate": ate})
-        return ate
+        plt.savefig(os.path.join(plot_dir, "evo_2dplot_{}.png".format(str(label))), dpi=90)
+        plt.close()
+        
+        wandb.log({"frame_idx": latest_frame_idx, "ate": ape_stat})
+        return ape_stat
 
 
 def eval_rendering(

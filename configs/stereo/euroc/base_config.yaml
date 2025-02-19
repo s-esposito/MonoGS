@@ -38,7 +38,7 @@ Training:
   pose_window: 3
   edge_threshold: 1.1
   rgb_boundary_threshold: 0.01
-  alpha: 0.9
+  lambda_depth: 0.9
   kf_translation: 0.08
   kf_min_translation: 0.05
   kf_overlap: 0.9
@@ -64,7 +64,7 @@ opt_params:
   scaling_lr: 0.001
   rotation_lr: 0.001
   percent_dense: 0.01
-  lambda_dssim: 0.2
+  lambda_ssim: 0.2
   densification_interval: 100
   opacity_reset_interval: 3000
   densify_from_iter: 500

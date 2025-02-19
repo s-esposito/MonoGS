@@ -129,7 +129,7 @@ class ParamsGUI:
         width_data,
     ):
         # self.pipe = pipe
-        self.nr_objects = nr_objects
+        self.nr_dyn_objects = nr_objects
         self.background = background
         self.gaussians = gaussians
         self.cam_intrinsics = cam_intrinsics

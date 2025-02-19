@@ -101,18 +101,18 @@ def compile_shaders(vertex_shader, fragment_shader):
     return active_shader
 
 
-def set_attributes(program, keys, values, vao=None, buffer_ids=None):
+def set_attributes(program, keys, values, vao=None, buffer_idxs=None):
     glUseProgram(program)
     if vao is None:
         vao = glGenVertexArrays(1)
     glBindVertexArray(vao)
 
-    if buffer_ids is None:
-        buffer_ids = [None] * len(keys)
-    for i, (key, value, b) in enumerate(zip(keys, values, buffer_ids)):
+    if buffer_idxs is None:
+        buffer_idxs = [None] * len(keys)
+    for i, (key, value, b) in enumerate(zip(keys, values, buffer_idxs)):
         if b is None:
             b = glGenBuffers(1)
-            buffer_ids[i] = b
+            buffer_idxs[i] = b
         glBindBuffer(GL_ARRAY_BUFFER, b)
         glBufferData(GL_ARRAY_BUFFER, value.nbytes, value.reshape(-1), GL_STATIC_DRAW)
         length = value.shape[-1]
@@ -121,7 +121,7 @@ def set_attributes(program, keys, values, vao=None, buffer_ids=None):
         glEnableVertexAttribArray(pos)
 
     glBindBuffer(GL_ARRAY_BUFFER, 0)
-    return vao, buffer_ids
+    return vao, buffer_idxs
 
 
 def set_attribute(program, key, value, vao=None, buffer_id=None):

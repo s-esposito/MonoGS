@@ -55,115 +55,94 @@ def depth_reg(depth, gt_image, huber_eps=0.1, mask=None):
     return err
 
 
-def get_loss_tracking(config, image, depth, opacity, viewpoint, initialization=False):
-    image_ab = (torch.exp(viewpoint.exposure_a)) * image + viewpoint.exposure_b
-    if depth is None:
-        return get_loss_tracking_rgb(config, image_ab, opacity, viewpoint)
-    else:
-        return get_loss_tracking_rgbd(config, image_ab, depth, opacity, viewpoint)
-
-
-def get_loss_tracking_rgb(config, image, opacity, viewpoint):
-    gt_image = viewpoint.rgb  # .cuda()
-    gt_mask = viewpoint.mask
-
-    if not MASK_RGB_LOSS:
-        gt_mask = None
-
-    # _, h, w = gt_image.shape
-    # mask_shape = (1, h, w)
-    # rgb_boundary_threshold = config["Training"]["rgb_boundary_threshold"]
-    # rgb_pixel_mask = (gt_image.sum(dim=0) > rgb_boundary_threshold).view(*mask_shape)
-    # rgb_pixel_mask = rgb_pixel_mask * viewpoint.grad_mask
-
-    if gt_mask is not None:
-        mask = gt_mask * viewpoint.grad_mask
-    else:
-        mask = viewpoint.grad_mask
-
-    l1 = opacity * torch.abs(image * mask - gt_image * mask)
-    return l1.mean()
-
-
-def get_loss_tracking_rgbd(
-    config, image, depth, opacity, viewpoint, initialization=False
+def get_loss_tracking(
+    render_image,
+    render_depth,
+    render_opacity,
+    viewpoint,
+    invert_depth=False,
+    lambda_depth=0.9
 ):
-    alpha = config["Training"]["alpha"] if "alpha" in config["Training"] else 0.95
-    gt_depth = viewpoint.depth[None]
+    gt_rgb = viewpoint.rgb  # 3xHxW
+    gt_mask = viewpoint.mask if MASK_RGB_LOSS else torch.ones_like(gt_rgb[0])  # HxW
+    gt_depth = viewpoint.depth[None]  # 1xHxW
 
-    depth_pixel_mask = (gt_depth > 0.01).view(*depth.shape)
-    opacity_mask = (opacity > 0.95).view(*depth.shape)
+    # Weight by opacity
+    opacity_mask = (render_opacity > 0.99)
 
-    l1_rgb = get_loss_tracking_rgb(config, image, opacity, viewpoint)
-    depth_mask = depth_pixel_mask * opacity_mask
-    l1_depth = torch.abs(depth * depth_mask - gt_depth * depth_mask)
-    return alpha * l1_rgb + (1 - alpha) * l1_depth.mean()
+    # RGB computation
+    rgb = torch.exp(viewpoint.exposure_a) * render_image + viewpoint.exposure_b
+    rgb_mask = gt_mask * viewpoint.grad_mask * opacity_mask
 
+    l1_rgb = render_opacity * torch.abs(rgb * rgb_mask - gt_rgb * rgb_mask).mean()
+    l1_rgb = l1_rgb.mean()  # Ensure it's a scalar
 
-def get_loss_mapping(config, image, depth, viewpoint, opacity, initialization=False):
-    if initialization:
-        image_ab = image
+    # Depth computation
+    depth_mask = (gt_depth > 0) * opacity_mask
+
+    if depth_mask.any():  # Only compute if depth_mask is not empty
+        if invert_depth:
+            eps = 1e-6  # To prevent division by zero
+            l1_depth = torch.abs((1 / (render_depth[depth_mask] + eps)) - (1 / (gt_depth[depth_mask] + eps))).mean()
+        else:
+            l1_depth = torch.abs(render_depth[depth_mask] - gt_depth[depth_mask]).mean()
     else:
-        image_ab = (torch.exp(viewpoint.exposure_a)) * image + viewpoint.exposure_b
-    # if config["Training"]["monocular"]:
-    if depth is None:
-        return get_loss_mapping_rgb(config, image_ab, viewpoint)
-    else:
-        return get_loss_mapping_rgbd(config, image_ab, depth, viewpoint)
+        l1_depth = torch.tensor(0.0, device=render_depth.device, dtype=render_depth.dtype)  # Ensure correct device & dtype
+
+    # return (lambda_depth * l1_rgb + (1 - lambda_depth) * l1_depth).mean()  # Explicitly ensure scalar
+    return 0.5 * l1_rgb + l1_depth
 
 
-def get_loss_mapping_rgb(config, image, viewpoint):
-    gt_image = viewpoint.rgb  # .cuda()
-    gt_mask = viewpoint.mask
 
+def get_loss_mapping(
+    render_image,
+    render_depth,
+    # render_opacity,
+    viewpoint,
+    init=False,
+    invert_depth=False,
+    lambda_depth=0.9
+):
+    
+    gt_rgb = viewpoint.rgb  # 3xHxW
+    gt_mask = viewpoint.mask  # HxW
+    gt_depth = viewpoint.depth[None]  # HxW
     if not MASK_RGB_LOSS:
         gt_mask = None
 
-    # _, h, w = gt_image.shape
-    # mask_shape = (1, h, w)
-    # rgb_boundary_threshold = config["Training"]["rgb_boundary_threshold"]
-    # rgb_pixel_mask = (gt_image.sum(dim=0) > rgb_boundary_threshold).view(*mask_shape)
-    # l1_rgb = torch.abs(image * rgb_pixel_mask - gt_image * rgb_pixel_mask)
-    if gt_mask is not None:
-        l1_rgb = torch.abs(image * gt_mask - gt_image * gt_mask)
+    # RGB
+
+    if init:
+        rgb = render_image
     else:
-        l1_rgb = torch.abs(image - gt_image)
+        rgb = (torch.exp(viewpoint.exposure_a)) * render_image + viewpoint.exposure_b   
 
-    return l1_rgb.mean()
-
-
-def get_loss_mapping_rgbd(config, image, depth, viewpoint, initialization=False):
-    alpha = config["Training"]["alpha"] if "alpha" in config["Training"] else 0.95
-    # rgb_boundary_threshold = config["Training"]["rgb_boundary_threshold"]
-
-    gt_image = viewpoint.rgb  # .cuda()
-    gt_mask = viewpoint.mask
-
-    if not MASK_RGB_LOSS:
-        gt_mask = None
-
-    gt_depth = viewpoint.depth[None]
-
-    # rgb_pixel_mask = (gt_image.sum(dim=0) > rgb_boundary_threshold).view(*depth.shape)
-    # l1_rgb = torch.abs(image * rgb_pixel_mask - gt_image * rgb_pixel_mask)
-    depth_pixel_mask = (gt_depth > 0.01).view(*depth.shape)
+    rgb = rgb.permute(1, 2, 0)  # HxWx3
+    gt_rgb = gt_rgb.permute(1, 2, 0)  # HxWx3
 
     if gt_mask is not None:
-        l1_rgb = torch.abs(image * gt_mask - gt_image * gt_mask)
+        l1_rgb = torch.abs(rgb[gt_mask] - gt_rgb[gt_mask])
     else:
-        l1_rgb = torch.abs(image - gt_image)
+        l1_rgb = torch.abs(rgb - gt_rgb)
+    l1_rgb = l1_rgb.mean()
 
-    l1_depth = torch.abs(depth * depth_pixel_mask - gt_depth * depth_pixel_mask)
+    # Depth
 
-    return alpha * l1_rgb.mean() + (1 - alpha) * l1_depth.mean()
+    # only use valid depth pixels
+    depth_mask = (gt_depth > 0)
+
+    if invert_depth:
+        l1_depth = torch.abs((1/render_depth[depth_mask]) - (1/gt_depth[depth_mask]))
+    else:
+        l1_depth = torch.abs(render_depth[depth_mask] - gt_depth[depth_mask])
+    l1_depth = l1_depth.mean()
+
+    return lambda_depth * l1_rgb + (1 - lambda_depth) * l1_depth
 
 
-def get_median_depth(depth, opacity=None, mask=None, return_std=False):
-    depth = depth.detach().clone()
-    valid = depth > 0
-    if opacity is not None:
-        opacity = opacity.detach()
-        valid = torch.logical_and(valid, opacity > 0.95)
+@torch.no_grad()
+def get_median_depth(depth, mask=None, return_std=False):
+    valid = (depth > 0)
     if mask is not None:
         valid = torch.logical_and(valid, mask)
     valid_depth = depth[valid]

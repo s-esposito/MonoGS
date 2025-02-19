@@ -83,18 +83,18 @@ class CameraExtrinsics(nn.Module):
     def __init__(
         self,
         frame_idx: int,
-        rgb,
+        device: str,
+        rgb=None,
         depth=None,
         mask=None,
         segmentation=None,
         gt_pose=None,
-        device="cuda:0",
     ):
         super(CameraExtrinsics, self).__init__()
         self.frame_idx = frame_idx
         self.device = device
 
-        T = torch.eye(4, device=device)
+        T = torch.eye(4, device=device, dtype=torch.float32)
         self.R = T[:3, :3]
         self.T = T[:3, 3]
 
@@ -102,8 +102,8 @@ class CameraExtrinsics(nn.Module):
             self.R_gt = None
             self.T_gt = None
         else:
-            self.R_gt = gt_pose[:3, :3]
-            self.T_gt = gt_pose[:3, 3]
+            self.R_gt = gt_pose[:3, :3].to(dtype=torch.float32)
+            self.T_gt = gt_pose[:3, 3].to(dtype=torch.float32)
 
         self.rgb = rgb
         self.mask = mask
@@ -144,7 +144,7 @@ class CameraExtrinsics(nn.Module):
             rgb = rgb * mask
             depth = depth * mask
 
-        return CameraExtrinsics(
+        viewpoint = CameraExtrinsics(
             frame_idx,
             rgb=rgb,
             depth=depth,
@@ -154,15 +154,18 @@ class CameraExtrinsics(nn.Module):
             device=dataset.device,
         )
 
+        return viewpoint
+
     @staticmethod
     def init_from_gui(
         frame_idx,
-        T,
+        pose,
     ):
         return CameraExtrinsics(
             frame_idx,
             rgb=None,
-            gt_pose=T,
+            gt_pose=pose,
+            device="cuda:0",
         )
 
     @property
@@ -178,7 +181,7 @@ class CameraExtrinsics(nn.Module):
         self.T = t.to(device=self.device)
 
     def compute_grad_mask(self, config):
-        edge_threshold = config["Training"]["edge_threshold"]
+        edge_threshold = 1.1  # config["Training"]["edge_threshold"]
 
         gray_img = self.rgb.mean(dim=0, keepdim=True)
         gray_grad_v, gray_grad_h = image_gradient(gray_img)
@@ -187,37 +190,36 @@ class CameraExtrinsics(nn.Module):
         gray_grad_h = gray_grad_h * mask_h
         img_grad_intensity = torch.sqrt(gray_grad_v**2 + gray_grad_h**2)
 
-        if config["Dataset"]["type"] == "replica":
-            row, col = 32, 32
-            multiplier = edge_threshold
-            _, h, w = self.rgb.shape
-            for r in range(row):
-                for c in range(col):
-                    block = img_grad_intensity[
-                        :,
-                        r * int(h / row) : (r + 1) * int(h / row),
-                        c * int(w / col) : (c + 1) * int(w / col),
-                    ]
-                    th_median = block.median()
-                    block[block > (th_median * multiplier)] = 1
-                    block[block <= (th_median * multiplier)] = 0
-            self.grad_mask = img_grad_intensity
-        else:
-            median_img_grad_intensity = img_grad_intensity.median()
-            self.grad_mask = (
-                img_grad_intensity > median_img_grad_intensity * edge_threshold
-            )
+        # if config["Dataset"]["type"] == "replica":
+        #     row, col = 32, 32
+        #     multiplier = edge_threshold
+        #     _, h, w = self.rgb.shape
+        #     for r in range(row):
+        #         for c in range(col):
+        #             block = img_grad_intensity[
+        #                 :,
+        #                 r * int(h / row) : (r + 1) * int(h / row),
+        #                 c * int(w / col) : (c + 1) * int(w / col),
+        #             ]
+        #             th_median = block.median()
+        #             block[block > (th_median * multiplier)] = 1
+        #             block[block <= (th_median * multiplier)] = 0
+        #     self.grad_mask = img_grad_intensity
+        # else:
+        
+        median_img_grad_intensity = img_grad_intensity.median()
+        self.grad_mask = (
+            img_grad_intensity > median_img_grad_intensity * edge_threshold
+        )
 
-    def clean(self):
-        self.rgb = None
-        self.depth = None
-        self.grad_mask = None
-
-        self.cam_rot_delta = None
-        self.cam_trans_delta = None
-
-        self.exposure_a = None
-        self.exposure_b = None
+    # def clean(self):
+    #     self.rgb = None
+    #     self.depth = None
+    #     self.grad_mask = None
+    #     self.cam_rot_delta = None
+    #     self.cam_trans_delta = None
+    #     self.exposure_a = None
+    #     self.exposure_b = None
 
 
 def get_full_proj_transform(
