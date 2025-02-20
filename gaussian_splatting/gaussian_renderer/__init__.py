@@ -19,8 +19,7 @@ from utils.camera_utils import (
     CameraIntrinsics,
     get_full_proj_transform,
 )
-from gaussian_splatting.scene.gaussian_model import GaussianModel
-
+# from gaussian_splatting.scene.gaussian_model import GaussianModel
 # from gaussian_splatting.utils.sh_utils import eval_sh
 
 
@@ -33,7 +32,7 @@ def render(
     scales: torch.Tensor,  # scale
     opacity: torch.Tensor,  # opacity
     features: torch.Tensor,  # rgb or sh
-    active_sh_degree: int,
+    # active_sh_degree: int,
     # pipe,
     bg_color: torch.Tensor,
     scaling_modifier=1.0,
@@ -78,7 +77,7 @@ def render(
         viewmatrix=viewpoint_camera.world_view_transform,
         projmatrix=full_proj_transform,
         projmatrix_raw=projection_matrix,
-        sh_degree=active_sh_degree,
+        sh_degree=0,  # active_sh_degree,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=False,
@@ -105,7 +104,8 @@ def render(
         scales = scales
     # rotations = gaussians.get_rotation
 
-    # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
+    # If precomputed colors are provided, use them. 
+    # Otherwise, if it is desired to precompute colors
     # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
     # shs = None
     # colors_precomp = None
@@ -124,7 +124,7 @@ def render(
     #     shs = features
     # else:
     #     colors_precomp = override_color
-    shs = features
+    # shs = features
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -132,8 +132,8 @@ def render(
         rendered_image, radii, depth, opacity = rasterizer(
             means3D=means3D[mask],
             means2D=means2D[mask],
-            shs=shs[mask],
-            colors_precomp=None,  # colors_precomp[mask] if colors_precomp is not None else None,
+            shs=None,  # shs[mask],
+            colors_precomp=features[mask],  # colors_precomp[mask] if colors_precomp is not None else None,
             opacities=opacity[mask],
             scales=scales[mask],
             rotations=rotations[mask],
@@ -145,8 +145,8 @@ def render(
         rendered_image, radii, depth, opacity, n_touched = rasterizer(
             means3D=means3D,
             means2D=means2D,
-            shs=shs,
-            colors_precomp=None,  # colors_precomp,
+            shs=None,  # sh,
+            colors_precomp=features,  # colors_precomp,
             opacities=opacity,
             scales=scales,
             rotations=rotations,

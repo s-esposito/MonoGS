@@ -26,6 +26,7 @@ from viewer.gui_utils import (
     cv_gl,
     get_latest_queue,
 )
+# from gaussian_splatting.utils.sh_utils import RGB2SH, SH2RGB
 from utils.camera_utils import CameraExtrinsics, CameraIntrinsics
 from utils.logging_utils import Log
 
@@ -98,7 +99,9 @@ class Viewer:
         self.segments_colors[2] = torch.tensor(
             [0.0, 0.0, 1.0], dtype=torch.float32, device="cuda"
         )
-        
+        # self.segments_colors = RGB2SH(self.segments_colors)
+        self.segments_colors = self.segments_colors
+
         Log(f"Viewer resolution {self.window_w}x{self.window_h}", tag="GUI")
         Log(f"Data resolution {self.width_3d}x{self.height_3d}", tag="GUI")
 
@@ -503,7 +506,7 @@ class Viewer:
             #             # change color to blue
             #             frustum = self.frustum_dict[name]
             #             self.update_camera(name, frustum, frustum.pose, color=[0, 0, 1])
-            
+
             for _, viewpoint in packet.viewpoints.items():
 
                 w2c = getWorld2View(viewpoint.R, viewpoint.T).cpu().numpy()
@@ -567,12 +570,13 @@ class Viewer:
             depth = o3d.geometry.Image(depth)
             # update widget
             self.in_depth_widget.update_image(depth)
-            
+
         if packet.gt_segments is not None:
             # Log("Received ground truth segmentation", tag="GUI")
             segments = packet.gt_segments.squeeze(0)  # torch, int64, HxW
             # get colors from self.segments_colors
-            rgb = self.segments_colors[segments] * 255 # HxWx3
+            # rgb = SH2RGB(self.segments_colors[segments]) * 255  # HxWx3
+            rgb = self.segments_colors[segments] * 255  # HxWx3
             # convert to uint8
             rgb = rgb.byte()
             # convert to C-contiguous memory layout
@@ -593,10 +597,7 @@ class Viewer:
 
     def render_o3d_image(self, renders_np, current_cam, cam_intrinsics):
         # act differently based on selected shader
-        if (
-            self.selected_shader == "rgb"
-            or self.selected_shader == "segmentation"
-        ):
+        if self.selected_shader == "rgb" or self.selected_shader == "segmentation":
             # get the buffer
             rgb = renders_np["render"]  # HxWx3
             render_img = o3d.geometry.Image(rgb)
@@ -703,7 +704,7 @@ class Viewer:
                 kf_idx.view(-1, 1).cpu().numpy(), colormap="jet", dtype=np.float32
             )
             features = torch.from_numpy(rgb_kf).to(features.device)
-            
+
         # print("features", features.shape, features.min(), features.max())
 
         # render the scene
@@ -717,7 +718,7 @@ class Viewer:
             self.gaussians_dict["scales"],
             self.gaussians_dict["opacity"],
             features,
-            self.gaussians_dict["active_sh_degree"],
+            # self.gaussians_dict["active_sh_degree"],
             self.background,
             self.scaling_slider.double_value,
             override_color=None,
@@ -769,7 +770,7 @@ class Viewer:
                     else:
                         buffer = value.detach().contiguous().cpu().numpy()
                         renders_np[key] = buffer
-            
+
         self.render_img = self.render_o3d_image(renders_np, current_cam, cam_intrinsics)
         self.widget3d.scene.set_background([0, 0, 0, 1], self.render_img)
 
@@ -779,7 +780,7 @@ class Viewer:
 
     def _update_thread(self):
         while True:
-            
+
             # target_fps = 60
             # target_fps_ms = target_fps / 1000
             # sleep_ms = 1000 / target_fps_ms

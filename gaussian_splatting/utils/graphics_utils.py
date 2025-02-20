@@ -30,19 +30,16 @@ class BasicPointCloud(NamedTuple):
 #     return np.float32(Rt)
 
 
-def getWorld2View(R, t, translate=torch.tensor([0.0, 0.0, 0.0]), scale=1.0):
-    translate = translate.to(R.device)
-    Rt = torch.zeros((4, 4), device=R.device)
-    Rt[:3, :3] = R
-    Rt[:3, 3] = t
-    Rt[3, 3] = 1.0
-
-    c2w = torch.linalg.inv(Rt)
-    cam_center = c2w[:3, 3]
-    cam_center = (cam_center + translate) * scale
-    c2w[:3, 3] = cam_center
-    Rt = torch.linalg.inv(c2w)
-    return Rt
+def getWorld2View(R, t):
+    w2c = torch.zeros((4, 4), device=R.device)
+    w2c[:3, :3] = R
+    w2c[:3, 3] = t
+    w2c[3, 3] = 1.0
+    # c2w = torch.linalg.inv(w2c)
+    # cam_center = c2w[:3, 3]
+    # c2w[:3, 3] = cam_center
+    # w2c = torch.linalg.inv(c2w)
+    return w2c
 
 
 # def getProjectionMatrix(znear, zfar, fovX, fovY):

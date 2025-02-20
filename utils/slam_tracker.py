@@ -28,7 +28,7 @@ class Tracker(mp.Process):
         q_main2vis,
         q_vis2main,
         window_size,
-        device
+        device,
     ):
         super().__init__()
         self.state = state
@@ -59,7 +59,7 @@ class Tracker(mp.Process):
         Log("Created", tag="Tracker")
 
         self.init()
-        
+
     def set_hyperparams(self):
         self.save_dir = self.config["Results"]["save_dir"]
         self.save_results = True  # self.config["Results"]["save_results"]
@@ -136,7 +136,7 @@ class Tracker(mp.Process):
             range(self.tracking_itr_num), desc=f"Tracking {cur_frame_idx}", disable=True
         )
         for tracking_itr in pbar:
-            
+
             pose_optimizer.zero_grad()
 
             render_pkg = render(
@@ -147,11 +147,12 @@ class Tracker(mp.Process):
                 self.gaussians.get_scaling,
                 self.gaussians.get_opacity,
                 self.gaussians.get_features,
-                self.gaussians.active_sh_degree,
+                # self.gaussians.active_sh_degree,
                 # self.pipeline_params,
                 self.background,
             )
-
+            if render_pkg is None:
+                raise ValueError("Render package is None")
             render_image, render_depth, render_opacity = (
                 render_pkg["render"],
                 render_pkg["depth"],
@@ -163,7 +164,7 @@ class Tracker(mp.Process):
                 render_depth,
                 render_opacity,
                 cur_viewpoint,
-                invert_depth=False
+                invert_depth=False,
             )
 
             loss_tracking.backward()
@@ -171,7 +172,7 @@ class Tracker(mp.Process):
             with torch.no_grad():
                 pose_optimizer.step()
                 converged = update_pose(cur_viewpoint, converged_threshold=1e-4)
-                
+
             if self.q_main2vis is not None and tracking_itr % 10 == 0:
                 self.q_main2vis.put(
                     MainToViewerPacket(
@@ -219,9 +220,7 @@ class Tracker(mp.Process):
         point_ratio_2 = intersection / union
         return (point_ratio_2 < kf_overlap and dist_check2) or dist_check
 
-    def add_to_window(
-        self, cur_frame_idx, cur_visibility_mask
-    ):
+    def add_to_window(self, cur_frame_idx, cur_visibility_mask):
         N_dont_touch = 2
         self.cur_kf_list = [cur_frame_idx] + self.cur_kf_list
         # remove frames which has little overlap with the current frame
@@ -252,11 +251,13 @@ class Tracker(mp.Process):
         if to_remove:
             self.cur_kf_list.remove(to_remove[-1])
             removed_frame = to_remove[-1]
-        
+
         curr_frame = self.cameras[cur_frame_idx]
         kf_0_WC = torch.linalg.inv(getWorld2View(curr_frame.R, curr_frame.T))
 
-        if len(self.cur_kf_list) > self.window_size:  # self.config["Training"]["window_size"]:
+        if (
+            len(self.cur_kf_list) > self.window_size
+        ):  # self.config["Training"]["window_size"]:
             # we need to find the keyframe to remove...
             inv_dist = []
             for i in range(N_dont_touch, len(self.cur_kf_list)):
@@ -288,12 +289,7 @@ class Tracker(mp.Process):
 
     def request_keyframe(self, cur_frame_idx, cur_viewpoint):
         Log("Requesting keyframe", tag="Tracker")
-        msg = [
-            "keyframe",
-            cur_frame_idx,
-            cur_viewpoint,
-            self.cur_kf_list
-        ]
+        msg = ["keyframe", cur_frame_idx, cur_viewpoint, self.cur_kf_list]
         self.q_track2map.put(msg)
         self.requested_keyframe = True
 
@@ -314,11 +310,11 @@ class Tracker(mp.Process):
 
         for kf_idx, kf_R, kf_T in keyframes:
             self.cameras[kf_idx].update_RT(kf_R.clone(), kf_T.clone())
-            
+
         # if not self.is_window_full:
         #     # check if window is full
         #     self.is_window_full = len(self.cur_kf_list) == self.window_size
-        
+
     def run(self):
 
         Log("Started", tag="Tracker")
@@ -384,10 +380,10 @@ class Tracker(mp.Process):
                 )
                 #
                 cur_viewpoint.compute_grad_mask(self.config)
-                
+
                 #
                 self.cameras[cur_frame_idx] = cur_viewpoint
-                
+
                 if self.q_main2vis is not None:
                     self.q_main2vis.put(
                         MainToViewerPacket(
@@ -399,24 +395,24 @@ class Tracker(mp.Process):
 
                 # check if first frame
                 if cur_frame_idx == 0:
-                    
+
                     # Initialise the frame at the ground truth pose
                     cur_viewpoint.update_RT(cur_viewpoint.R_gt, cur_viewpoint.T_gt)
 
                     self.request_init(cur_frame_idx, cur_viewpoint)
 
                     self.cur_kf_list.append(cur_frame_idx)
-                    
+
                     cur_frame_idx += 1
                     continue
-                    
+
                 # track new frame
                 render_pkg = self.tracking(cur_frame_idx, cur_viewpoint)
 
                 # check if keyframe
                 last_keyframe_idx = self.cur_kf_list[0]
                 curr_visibility = (render_pkg["n_touched"] > 0).long()
-                
+
                 #
                 create_kf = False
                 if self.check_viewpoints_overlap:
@@ -424,13 +420,17 @@ class Tracker(mp.Process):
                     if len(self.cur_kf_list) < self.window_size:
                         # check overlap with the last keyframe
                         union = torch.logical_or(
-                            curr_visibility, self.occ_aware_visibility_dict[last_keyframe_idx]
+                            curr_visibility,
+                            self.occ_aware_visibility_dict[last_keyframe_idx],
                         ).count_nonzero()
                         intersection = torch.logical_and(
-                            curr_visibility, self.occ_aware_visibility_dict[last_keyframe_idx]
+                            curr_visibility,
+                            self.occ_aware_visibility_dict[last_keyframe_idx],
                         ).count_nonzero()
                         point_ratio = intersection / union
-                        create_kf = point_ratio < 0.9  # self.config["Training"]["kf_overlap"]
+                        create_kf = (
+                            point_ratio < 0.9
+                        )  # self.config["Training"]["kf_overlap"]
                     else:
                         create_kf = self.should_add_as_keyframe(
                             cur_frame_idx,
@@ -445,16 +445,11 @@ class Tracker(mp.Process):
 
                 if check_time and create_kf:
 
-                    removed = self.add_to_window(
-                        cur_frame_idx,
-                        curr_visibility
-                    )
+                    removed = self.add_to_window(cur_frame_idx, curr_visibility)
                     if removed is not None:
                         Log("Removed frame: ", removed, tag="Tracker")
-                    
-                    self.request_keyframe(
-                        cur_frame_idx, cur_viewpoint
-                    )
+
+                    self.request_keyframe(cur_frame_idx, cur_viewpoint)
 
                 cur_frame_idx += 1
 
@@ -463,7 +458,7 @@ class Tracker(mp.Process):
                     self.q_main2vis is not None
                     and cur_frame_idx % self.send_gui_every == 0
                 ):
-                
+
                     # create a dict with viewpoints in current windows
                     viewpoints = {
                         kf_idx: self.cameras[kf_idx] for kf_idx in self.cur_kf_list
@@ -480,13 +475,11 @@ class Tracker(mp.Process):
                     self.q_main2vis.put(
                         MainToViewerPacket(
                             gaussians=clone_obj(self.gaussians),
-                            # cur_viewpoint=cur_viewpoint,
-                            # cam_intrinsics=clone_obj(self.cam_intrinsics),
                             viewpoints=viewpoints,
                             cur_kf_list=self.cur_kf_list,
                         )
                     )
-                
+
                 # traj evaluation
                 if (
                     self.dataset.has_traj
@@ -521,7 +514,7 @@ class Tracker(mp.Process):
                 elif data[0] == "init":
                     self.sync_from_backend(data)
                     self.requested_init = False
-                    
+
                     if self.q_main2vis is not None:
                         self.q_main2vis.put(
                             MainToViewerPacket(

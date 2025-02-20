@@ -61,14 +61,14 @@ def get_loss_tracking(
     render_opacity,
     viewpoint,
     invert_depth=False,
-    lambda_depth=0.9
+    lambda_depth=0.9,
 ):
     gt_rgb = viewpoint.rgb  # 3xHxW
     gt_mask = viewpoint.mask if MASK_RGB_LOSS else torch.ones_like(gt_rgb[0])  # HxW
     gt_depth = viewpoint.depth[None]  # 1xHxW
 
     # Weight by opacity
-    opacity_mask = (render_opacity > 0.99)
+    opacity_mask = render_opacity > 0.99
 
     # RGB computation
     rgb = torch.exp(viewpoint.exposure_a) * render_image + viewpoint.exposure_b
@@ -83,15 +83,19 @@ def get_loss_tracking(
     if depth_mask.any():  # Only compute if depth_mask is not empty
         if invert_depth:
             eps = 1e-6  # To prevent division by zero
-            l1_depth = torch.abs((1 / (render_depth[depth_mask] + eps)) - (1 / (gt_depth[depth_mask] + eps))).mean()
+            l1_depth = torch.abs(
+                (1 / (render_depth[depth_mask] + eps))
+                - (1 / (gt_depth[depth_mask] + eps))
+            ).mean()
         else:
             l1_depth = torch.abs(render_depth[depth_mask] - gt_depth[depth_mask]).mean()
     else:
-        l1_depth = torch.tensor(0.0, device=render_depth.device, dtype=render_depth.dtype)  # Ensure correct device & dtype
+        l1_depth = torch.tensor(
+            0.0, device=render_depth.device, dtype=render_depth.dtype
+        )  # Ensure correct device & dtype
 
     # return (lambda_depth * l1_rgb + (1 - lambda_depth) * l1_depth).mean()  # Explicitly ensure scalar
     return 0.5 * l1_rgb + l1_depth
-
 
 
 def get_loss_mapping(
@@ -101,9 +105,9 @@ def get_loss_mapping(
     viewpoint,
     init=False,
     invert_depth=False,
-    lambda_depth=0.9
+    lambda_depth=0.9,
 ):
-    
+
     gt_rgb = viewpoint.rgb  # 3xHxW
     gt_mask = viewpoint.mask  # HxW
     gt_depth = viewpoint.depth[None]  # HxW
@@ -115,7 +119,7 @@ def get_loss_mapping(
     if init:
         rgb = render_image
     else:
-        rgb = (torch.exp(viewpoint.exposure_a)) * render_image + viewpoint.exposure_b   
+        rgb = (torch.exp(viewpoint.exposure_a)) * render_image + viewpoint.exposure_b
 
     rgb = rgb.permute(1, 2, 0)  # HxWx3
     gt_rgb = gt_rgb.permute(1, 2, 0)  # HxWx3
@@ -129,10 +133,12 @@ def get_loss_mapping(
     # Depth
 
     # only use valid depth pixels
-    depth_mask = (gt_depth > 0)
+    depth_mask = gt_depth > 0
 
     if invert_depth:
-        l1_depth = torch.abs((1/render_depth[depth_mask]) - (1/gt_depth[depth_mask]))
+        l1_depth = torch.abs(
+            (1 / render_depth[depth_mask]) - (1 / gt_depth[depth_mask])
+        )
     else:
         l1_depth = torch.abs(render_depth[depth_mask] - gt_depth[depth_mask])
     l1_depth = l1_depth.mean()
@@ -142,7 +148,7 @@ def get_loss_mapping(
 
 @torch.no_grad()
 def get_median_depth(depth, mask=None, return_std=False):
-    valid = (depth > 0)
+    valid = depth > 0
     if mask is not None:
         valid = torch.logical_and(valid, mask)
     valid_depth = depth[valid]

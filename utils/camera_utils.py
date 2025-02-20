@@ -170,7 +170,8 @@ class CameraExtrinsics(nn.Module):
 
     @property
     def world_view_transform(self):
-        return getWorld2View(self.R, self.T).transpose(0, 1)
+        w2c = getWorld2View(self.R, self.T).transpose(0, 1)
+        return w2c
 
     @property
     def camera_center(self):
@@ -206,11 +207,9 @@ class CameraExtrinsics(nn.Module):
         #             block[block <= (th_median * multiplier)] = 0
         #     self.grad_mask = img_grad_intensity
         # else:
-        
+
         median_img_grad_intensity = img_grad_intensity.median()
-        self.grad_mask = (
-            img_grad_intensity > median_img_grad_intensity * edge_threshold
-        )
+        self.grad_mask = img_grad_intensity > median_img_grad_intensity * edge_threshold
 
     # def clean(self):
     #     self.rgb = None

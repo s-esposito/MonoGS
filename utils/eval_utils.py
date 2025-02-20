@@ -74,9 +74,7 @@ def eval_traj_ate(
     plot_dir = os.path.join(save_dir, "plot")
     mkdir_p(plot_dir)
     label = "final" if final else "{:04}".format(latest_frame_idx)
-    with open(
-        os.path.join(plot_dir, f"trj_{label}.json"), "w", encoding="utf-8"
-    ) as f:
+    with open(os.path.join(plot_dir, f"trj_{label}.json"), "w", encoding="utf-8") as f:
         json.dump(trj_data, f, indent=4)
 
     # only evaluate trajectory if gt poses are given
@@ -88,7 +86,9 @@ def eval_traj_ate(
         traj_ref = PosePath3D(poses_se3=trj_gt_np)
         traj_est = PosePath3D(poses_se3=trj_est_np)
         traj_est_aligned = copy.deepcopy(traj_est)
-        traj_est_aligned.align(traj_ref, correct_scale=correct_scale, correct_only_scale=False)
+        traj_est_aligned.align(
+            traj_ref, correct_scale=correct_scale, correct_only_scale=False
+        )
         traj_est_aligned = traj_est
         # RMSE
         pose_relation = metrics.PoseRelation.translation_part
@@ -119,9 +119,11 @@ def eval_traj_ate(
             min_map=ape_stats["min"],
             max_map=ape_stats["max"],
         )
-        plt.savefig(os.path.join(plot_dir, "evo_2dplot_{}.png".format(str(label))), dpi=90)
+        plt.savefig(
+            os.path.join(plot_dir, "evo_2dplot_{}.png".format(str(label))), dpi=90
+        )
         plt.close()
-        
+
         wandb.log({"frame_idx": latest_frame_idx, "ate": ape_stat})
         return ape_stat
 
@@ -160,7 +162,7 @@ def eval_rendering(
             gaussians.get_scaling,
             gaussians.get_opacity,
             gaussians.get_features,
-            gaussians.active_sh_degree,
+            # gaussians.active_sh_degree,
             # pipe,
             background,
         )["render"]

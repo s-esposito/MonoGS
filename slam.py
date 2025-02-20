@@ -19,6 +19,7 @@ from utils.camera_utils import CameraExtrinsics, CameraIntrinsics
 from gaussian_splatting.utils.system_utils import mkdir_p
 from viewer import slam_viewer
 from utils.multiprocessing_utils import clone_obj
+
 # from viewer.gui_utils import ParamsGUI
 from viewer.viewer_packet import MainToViewerPacket
 from utils.config_utils import load_config
@@ -34,12 +35,12 @@ from utils.slam_tracker import Tracker
 @dataclass
 class State:
     pause: bool = False  # written by the GUI
-    
+
     # shared
     # cur_kf_list: list = dataclasses.field(default_factory=list)
-    
+
     # tracker
-    
+
     # mapper
     first_time_pruned: bool = False
 
@@ -73,8 +74,10 @@ class SLAM:
         )
         self.window_size = 30
 
-        nr_objects = len(self.dataset.static_objects_idxs) + len(self.dataset.dynamic_objects_idxs)
-        
+        nr_objects = len(self.dataset.static_objects_idxs) + len(
+            self.dataset.dynamic_objects_idxs
+        )
+
         #
         self.gaussians = GaussianModel(
             config=args.gaussians,
@@ -88,7 +91,9 @@ class SLAM:
         self.cam_intrinsics = CameraIntrinsics.init_from_dataset(self.dataset)
 
         bg_color = [0, 0, 0]
-        self.background = torch.tensor(bg_color, dtype=torch.float32, device=args.system.device)
+        self.background = torch.tensor(
+            bg_color, dtype=torch.float32, device=args.system.device
+        )
 
         # create state
         self.state = State()
@@ -159,13 +164,13 @@ class SLAM:
 
         if self.use_threading:
             # WITH THREADING
-            
+
             # start the backend process
             backend_process = mp.Process(target=self.mapper.run)  # separate process
             backend_process.start()
 
             self.tracker.run()
-            
+
             # # start the frontend process
             # frontend_process = mp.Process(target=self.tracker.run)  # separate process
             # frontend_process.start()
@@ -179,9 +184,9 @@ class SLAM:
             # Log("Frontend joined the main thread")
         else:
             # WITHOUT THREADING
-            
+
             self.run()
-            
+
         # record the end time
         torch.cuda.synchronize()
         end.record()
@@ -303,18 +308,18 @@ class SLAM:
         Log("SLAM finished")
 
     def run(self):
-        
+
         # TODO: finish implementation
         # WITHOUT THREADING
-        
+
         Log("Started")
-        
+
         cur_frame_idx = 0
         while True:
-            
+
             if cur_frame_idx >= len(self.dataset):
                 break
-            
+
             #
             if self.q_vis2main is not None:
                 if self.q_vis2main.empty():
@@ -332,7 +337,7 @@ class SLAM:
             )
 
             # get new frame
-            
+
             cur_viewpoint = CameraExtrinsics.init_from_dataset(
                 self.dataset,
                 cur_frame_idx,
@@ -342,23 +347,23 @@ class SLAM:
 
             # update cameras
             self.tracker.cameras[cur_frame_idx] = cur_viewpoint
-            
+
             # check if first frame
             if cur_frame_idx == 0:
-            
+
                 # Initialise the frame at the ground truth pose
                 cur_viewpoint.update_RT(cur_viewpoint.R_gt, cur_viewpoint.T_gt)
-                
+
                 # self.tracker.kf_indices.append(cur_frame_idx)
-                
+
                 # get the depth and segmentation
-                cur_depth, cur_segmentation = self.tracker.get_viewpoint_depth_and_segmentation(
-                    cur_viewpoint
+                cur_depth, cur_segmentation = (
+                    self.tracker.get_viewpoint_depth_and_segmentation(cur_viewpoint)
                 )
-                
+
                 # add the first keyframe to viewpoints dict
                 self.mapper.viewpoints_dict[cur_frame_idx] = cur_viewpoint
-                
+
                 # first frmae is a keyframe
                 self.mapper.add_next_kf(
                     frame_idx=cur_frame_idx,
@@ -367,30 +372,34 @@ class SLAM:
                     cur_segmentation=cur_segmentation,
                     init=True,
                 )
-                
+
                 #
                 self.mapper.initialize_map(
                     cur_frame_idx=cur_frame_idx, cur_viewpoint=cur_viewpoint
                 )
-                
+
                 # exchange info
                 self.tracker.gaussians = self.mapper.gaussians
                 self.tracker.cam_intrinsics = self.mapper.cam_intrinsics
-                self.tracker.occ_aware_visibility_dict = self.mapper.occ_aware_visibility_dict
+                self.tracker.occ_aware_visibility_dict = (
+                    self.mapper.occ_aware_visibility_dict
+                )
                 for kf_idx in self.mapper.cur_kf_list:
                     kf_mapper = self.mapper.viewpoints_dict[kf_idx]
                     self.tracker.cameras[kf_idx].update_RT(kf_mapper.R, kf_mapper.T)
-                
+
                 self.tracker.cur_kf_list.append(cur_frame_idx)
                 if not self.tracker.is_window_full:
                     # check if window is full
-                    self.tracker.is_window_full = len(self.tracker.cur_kf_list) == self.window_size
-                
+                    self.tracker.is_window_full = (
+                        len(self.tracker.cur_kf_list) == self.window_size
+                    )
+
                 cur_frame_idx += 1
                 continue
-            
+
             else:
-            
+
                 # Track new frame
                 render_pkg = self.tracker.tracking(cur_frame_idx, cur_viewpoint)
 
@@ -414,7 +423,9 @@ class SLAM:
 
                 #
                 last_keyframe_idx = self.tracker.cur_kf_list[0]
-                check_time = (cur_frame_idx - last_keyframe_idx) >= self.tracker.kf_interval
+                check_time = (
+                    cur_frame_idx - last_keyframe_idx
+                ) >= self.tracker.kf_interval
                 curr_visibility = (render_pkg["n_touched"] > 0).long()
                 create_kf = self.tracker.is_keyframe(
                     cur_frame_idx,
@@ -422,14 +433,16 @@ class SLAM:
                     curr_visibility,
                     self.tracker.occ_aware_visibility_dict,
                 )
-                
+
                 # check if window is full
                 if len(self.tracker.cur_kf_list) < self.window_size:
                     union = torch.logical_or(
-                        curr_visibility, self.tracker.occ_aware_visibility_dict[last_keyframe_idx]
+                        curr_visibility,
+                        self.tracker.occ_aware_visibility_dict[last_keyframe_idx],
                     ).count_nonzero()
                     intersection = torch.logical_and(
-                        curr_visibility, self.tracker.occ_aware_visibility_dict[last_keyframe_idx]
+                        curr_visibility,
+                        self.tracker.occ_aware_visibility_dict[last_keyframe_idx],
                     ).count_nonzero()
                     point_ratio = intersection / union
                     # condition to create a keyframe
@@ -437,7 +450,7 @@ class SLAM:
                         check_time
                         and point_ratio < 0.9  # self.config["Training"]["kf_overlap"]
                     )
-                
+
                 create_kf = check_time and create_kf
 
                 if create_kf:
@@ -448,7 +461,7 @@ class SLAM:
                         self.tracker.occ_aware_visibility_dict,
                         self.tracker.cur_kf_list,
                     )
-                    
+
                     if removed is not None:
                         print("removed from window", removed)
 
@@ -481,16 +494,16 @@ class SLAM:
                         final=False,
                         # correct_scale=False
                     )
-            
+
             # TODO: remove
             break
-            
+
 
 @dataclass
 class System:
     device: str = "cuda:0"
     seed: int = 42
-    
+
     # set the seed
     def __post_init__(self):
         torch.manual_seed(self.seed)
@@ -499,14 +512,17 @@ class System:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+
 @dataclass
 class Guassians:
     sh_degree: int = 0
     isotropic: bool = True
 
+
 @dataclass
 class GUI:
     active: bool = True
+
 
 @dataclass
 class Results:
@@ -514,7 +530,8 @@ class Results:
     eval_rendering: bool = False
     wandb: bool = False
     path: Path = Path("results")
-    
+
+
 @dataclass
 class Dataset:
     path: Path = Path("datasets")
@@ -587,7 +604,7 @@ if __name__ == "__main__":
         tmp = str(args.config_path).split(".")[0]
         args.results.path = save_dir
         mkdir_p(save_dir)
-        
+
         with open(os.path.join(save_dir, "config.yml"), "w") as file:
             documents = yaml.dump(config, file)
 

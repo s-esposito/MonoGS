@@ -44,6 +44,7 @@ def ssim(img1, img2):
     # img shapes (1, 3, H, W)
     return fused_ssim(img1, img2, padding="valid")
 
+
 # def gaussian(window_size, sigma):
 #     gauss = torch.Tensor(
 #         [

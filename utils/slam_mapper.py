@@ -55,7 +55,7 @@ class Mapper(mp.Process):
         self.window_size = window_size
 
         Log("Created", tag="Mapper")
-        
+
         self.init()
 
     def set_hyperparams(self):
@@ -89,9 +89,7 @@ class Mapper(mp.Process):
         self.size_threshold = 20  # self.config["Training"]["size_threshold"]
         # self.single_thread = True
 
-    def add_next_kf(
-        self, frame_idx, cur_viewpoint, init=False
-    ):
+    def add_next_kf(self, frame_idx, cur_viewpoint, init=False):
         #
         Log(f"Adding keyframe {frame_idx}, init: {init}", tag="Mapper")
 
@@ -109,7 +107,7 @@ class Mapper(mp.Process):
         # assert cur_depth.device == self.device, f"Depth map device ({cur_depth.device}) is not {self.device}"
         # assert cur_segmentation.device == self.device, f"Segmentation device ({cur_segmentation.device}) is not {self.device}"
 
-        # render cur_viewpoint to get the render_image, render_depth, 
+        # render cur_viewpoint to get the render_image, render_depth,
         if not init:
             with torch.no_grad():
                 render_pkg = render(
@@ -120,10 +118,12 @@ class Mapper(mp.Process):
                     self.gaussians.get_scaling,
                     self.gaussians.get_opacity,
                     self.gaussians.get_features,
-                    self.gaussians.active_sh_degree,
+                    # self.gaussians.active_sh_degree,
                     # self.pipeline_params,
                     self.background,
                 )
+                if render_pkg is None:
+                    raise ValueError("Render package is None")
                 (
                     render_depth,
                     render_opacity,
@@ -134,7 +134,7 @@ class Mapper(mp.Process):
         else:
             render_depth = None
             render_opacity = None
-        
+
         self.gaussians.extend_from_pcd_seq(
             viewpoint=cur_viewpoint,
             cam_intrinsics=self.cam_intrinsics,
@@ -144,6 +144,17 @@ class Mapper(mp.Process):
             init=init,
             # scale=scale,
         )
+        
+        if init:
+            with torch.no_grad():
+                # print shapes
+                print("xyz", self.gaussians.get_xyz.shape)
+                print("features_dc", self.gaussians.get_features.shape)
+                # print("features_rest", new_features_rest.shape)
+                print("scaling", self.gaussians.get_scaling.shape)
+                print("rotation", self.gaussians.get_rotation.shape)
+                print("opacity", self.gaussians.get_opacity.shape)
+                print("obj_prob", self.gaussians.get_obj_prob.shape)
 
     def init(self):
         #
@@ -168,10 +179,12 @@ class Mapper(mp.Process):
                 self.gaussians.get_scaling,
                 self.gaussians.get_opacity,
                 self.gaussians.get_features,
-                self.gaussians.active_sh_degree,
+                # self.gaussians.active_sh_degree,
                 # self.pipeline_params,
                 self.background,
             )
+            if render_pkg is None:
+                raise ValueError("Render package is None")
             (
                 render_image,
                 viewspace_point_tensor,
@@ -195,7 +208,7 @@ class Mapper(mp.Process):
                 # render_opacity,
                 cur_viewpoint,
                 init=True,
-                invert_depth=False
+                invert_depth=False,
             )
             loss_init.backward()
 
@@ -270,10 +283,12 @@ class Mapper(mp.Process):
                     self.gaussians.get_scaling,
                     self.gaussians.get_opacity,
                     self.gaussians.get_features,
-                    self.gaussians.active_sh_degree,
+                    # self.gaussians.active_sh_degree,
                     # self.pipeline_params,
                     self.background,
                 )
+                if render_pkg is None:
+                    raise ValueError("Render package is None")
                 # extract render results
                 (
                     render_image,
@@ -307,10 +322,10 @@ class Mapper(mp.Process):
                 n_touched_acm.append(n_touched)
 
                 nr_mapping_iters += 1
-            
+
             if False:
                 # Map from the two additional random viewpoints
-                
+
                 # Randomly sample two additional viewpoints
                 random_viewpoint_stack = []
                 current_window_set = set(cur_kf_list)
@@ -318,7 +333,7 @@ class Mapper(mp.Process):
                     if cam_idx in current_window_set:
                         continue
                     random_viewpoint_stack.append(cur_viewpoint)
-                
+
                 cam_idxs = torch.randperm(len(random_viewpoint_stack))[:2]
                 pbar_random = tqdm(cam_idxs, desc="Random", ncols=100, disable=True)
                 for cam_idx in pbar_random:
@@ -333,10 +348,12 @@ class Mapper(mp.Process):
                         self.gaussians.get_scaling,
                         self.gaussians.get_opacity,
                         self.gaussians.get_features,
-                        self.gaussians.active_sh_degree,
+                        # self.gaussians.active_sh_degree,
                         # self.pipeline_params,
                         self.background,
                     )
+                    if render_pkg is None:
+                        raise ValueError("Render package is None")
                     # extract render results
                     (
                         render_image,
@@ -368,12 +385,12 @@ class Mapper(mp.Process):
                     radii_acm.append(radii)
 
                     nr_mapping_iters += 1
-            
+
             # TODO: reactivate if isotropic is False
             # scaling = self.gaussians.get_scaling
             # isotropic_loss = torch.abs(scaling - scaling.mean(dim=1).view(-1, 1))
             # loss_mapping += 10 * isotropic_loss.mean()
-            
+
             loss_mapping.backward()
 
             gaussian_split = False
@@ -391,12 +408,17 @@ class Mapper(mp.Process):
                 if prune:
                     Log("Pruning Gaussians", tag="Mapper")
                     # only prune if we have a full window
-                    if len(cur_kf_list) == self.window_size:  # self.config["Training"]["window_size"]:
+                    if (
+                        len(cur_kf_list) == self.window_size
+                    ):  # self.config["Training"]["window_size"]:
                         # prune_mode = self.config["Training"]["prune_mode"]  # slam
                         prune_coviz = 3
                         self.gaussians.nr_obs.fill_(0)
                         # count the number of observations
-                        for window_idx, visibility in self.occ_aware_visibility_dict.items():
+                        for (
+                            window_idx,
+                            visibility,
+                        ) in self.occ_aware_visibility_dict.items():
                             self.gaussians.nr_obs += visibility.cpu()
                         # to_prune = None
                         # if prune_mode == "odometry":
@@ -416,9 +438,7 @@ class Mapper(mp.Process):
                         # mask of guassians that are observed less than 3 times
                         obs_mask = self.gaussians.nr_obs <= prune_coviz
                         # join the masks
-                        to_prune = torch.logical_and(
-                            obs_mask, kf_mask
-                        )
+                        to_prune = torch.logical_and(obs_mask, kf_mask)
                         # if to_prune is not None:  # and self.monocular:
                         self.gaussians.prune_points(to_prune.cuda())
                         for i in range((len(cur_kf_list))):
@@ -426,7 +446,7 @@ class Mapper(mp.Process):
                             self.occ_aware_visibility_dict[kf_idx] = (
                                 self.occ_aware_visibility_dict[kf_idx][~to_prune]
                             )
-                    
+
                     # returns false because Gaussians have not been split
                     return False
 
@@ -480,9 +500,9 @@ class Mapper(mp.Process):
         return gaussian_split
 
     def refinement(self, on_all_frames=False):
-        
+
         # TODO: refine ALL camera poses too
-        
+
         Log("Refinement", tag="Mapper")
 
         iteration_total = 26000
@@ -500,10 +520,12 @@ class Mapper(mp.Process):
                 self.gaussians.get_scaling,
                 self.gaussians.get_opacity,
                 self.gaussians.get_features,
-                self.gaussians.active_sh_degree,
+                # self.gaussians.active_sh_degree,
                 # self.pipeline_params,
                 self.background,
             )
+            if render_pkg is None:
+                raise ValueError("Render package is None")
             image, visibility_filter, radii = (
                 render_pkg["render"],
                 render_pkg["visibility_filter"],
@@ -623,8 +645,8 @@ class Mapper(mp.Process):
                     # add the keyframe
                     self.viewpoints_dict[cur_frame_idx] = cur_viewpoint
                     self.cur_kf_list = cur_kf_list
-                    
-                    # TODO: 
+
+                    # TODO:
 
                     #
                     self.add_next_kf(
@@ -635,7 +657,9 @@ class Mapper(mp.Process):
 
                     opt_params = []
                     # frames_to_optimize = self.config["Training"]["pose_window"]
-                    iter_per_kf = 300  # self.mapping_itr_num  # if self.single_thread else 10
+                    iter_per_kf = (
+                        300  # self.mapping_itr_num  # if self.single_thread else 10
+                    )
                     # if not self.first_time_pruned:
                     #     if (
                     #         len(self.cur_kf_list)
@@ -671,9 +695,7 @@ class Mapper(mp.Process):
                         opt_params.append(
                             {
                                 "params": [cur_viewpoint.cam_trans_delta],
-                                "lr": self.config["Training"]["lr"][
-                                    "cam_trans_delta"
-                                ]
+                                "lr": self.config["Training"]["lr"]["cam_trans_delta"]
                                 * 0.5,
                                 "name": "trans_{}".format(cur_viewpoint.frame_idx),
                             }
@@ -694,9 +716,7 @@ class Mapper(mp.Process):
                         )
                     self.keyframe_optimizers = torch.optim.Adam(opt_params)
 
-                    self.optimize_map(
-                        self.cur_kf_list, prune=False, iters=iter_per_kf
-                    )
+                    self.optimize_map(self.cur_kf_list, prune=False, iters=iter_per_kf)
                     self.optimize_map(self.cur_kf_list, prune=True, iters=1)
                     # push results to frontend
                     self.push_to_frontend("keyframe")

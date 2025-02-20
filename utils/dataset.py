@@ -367,29 +367,32 @@ class MonocularDataset(BaseDataset):
         #         "translation": np.zeros(3),
         #     },
         # }
-        
+
         self.preload = False
         self.color_imgs = []
         self.depth_imgs = []
         self.segmentation_imgs = []
-            
-            
+
     def load_data(self):
-        
+
         self.preload = True
-        
+
         for color_path in tqdm(self.color_paths, desc="Loading RGB"):
             # remove alpha channel
             self.color_imgs.append(np.array(Image.open(color_path))[..., :3])
 
         if self.has_depth and self.use_depth:
             for depth_path in tqdm(self.depth_paths, desc="Loading Depth"):
-                self.depth_imgs.append(np.array(Image.open(depth_path)) / self.depth_scale)
-                
+                self.depth_imgs.append(
+                    np.array(Image.open(depth_path)) / self.depth_scale
+                )
+
         if self.has_segmentation:
-            for segmentation_path in tqdm(self.segmentation_paths, desc="Loading Segmentation"):
+            for segmentation_path in tqdm(
+                self.segmentation_paths, desc="Loading Segmentation"
+            ):
                 self.segmentation_imgs.append(np.array(Image.open(segmentation_path)))
-            
+
     # def start_gt_traj_from_identity(self):
     #     # get first pose
     #     first_pose = self.poses[0]
@@ -450,10 +453,10 @@ class MonocularDataset(BaseDataset):
             image = cv2.remap(image, self.map1x, self.map1y, cv2.INTER_LINEAR)
 
         # convert to tensor
-        
+
         if pose is not None:
             pose = torch.from_numpy(pose).to(device=self.device)
-        
+
         image = (
             torch.from_numpy(image / 255.0)
             .clamp(0.0, 1.0)
@@ -650,7 +653,7 @@ class KubricDataset(MonocularDataset):
         print("Static objects IDs", self.static_objects_idxs)
         print("Dynamic objects IDs", self.dynamic_objects_idxs)
         print("Nr dyn objects", len(self.dynamic_objects_idxs))
-        # 
+        #
         self.load_data()
 
 

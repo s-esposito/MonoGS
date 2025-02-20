@@ -34,20 +34,30 @@ class MainToViewerPacket:
             self.gaussians_dict = {}
             # get dynamic values
             with torch.no_grad():
-                self.gaussians_dict["means"] = gaussians.get_xyz.detach().clone()  # (N, 3)
-                self.gaussians_dict["rotations"] = gaussians.get_rotation.detach().clone()  # (N, 4)
-                self.gaussians_dict["scales"] = gaussians.get_scaling.detach().clone()  # (N, 3)
-                self.gaussians_dict["opacity"] = gaussians.get_opacity.detach().clone()  # (N, 1)
-                self.gaussians_dict["features"] = gaussians.get_features.detach().clone()  # (N, C)
+                self.gaussians_dict["means"] = (
+                    gaussians.get_xyz.detach().clone()
+                )  # (N, 3)
+                self.gaussians_dict["rotations"] = (
+                    gaussians.get_rotation.detach().clone()
+                )  # (N, 4)
+                self.gaussians_dict["scales"] = (
+                    gaussians.get_scaling.detach().clone()
+                )  # (N, 3)
+                self.gaussians_dict["opacity"] = (
+                    gaussians.get_opacity.detach().clone()
+                )  # (N, 1)
+                self.gaussians_dict["features"] = (
+                    gaussians.get_features.detach().clone()
+                )  # (N, C)
                 obj_prob = gaussians.get_obj_prob.detach()
                 obj_idx = torch.argmax(obj_prob, dim=1).clone()
                 self.gaussians_dict["obj_idx"] = obj_idx  # (N)
             # get static values
-            self.gaussians_dict["active_sh_degree"] = gaussians.active_sh_degree
-            self.gaussians_dict["max_sh_degree"] = gaussians.max_sh_degree
+            # self.gaussians_dict["active_sh_degree"] = gaussians.active_sh_degree
+            # self.gaussians_dict["max_sh_degree"] = gaussians.max_sh_degree
             self.gaussians_dict["kf_idx"] = gaussians.kf_idx.clone()
             self.gaussians_dict["nr_obs"] = gaussians.nr_obs.clone()
-            
+
             # for key in self.gaussians_dict.keys():
             #     if isinstance(self.gaussians_dict[key], torch.Tensor):
             #         print(f"key: {key}, shape: {self.gaussians_dict[key].shape}")
@@ -58,20 +68,20 @@ class MainToViewerPacket:
         self.cur_frame_idx = cur_frame_idx  # int
         self.viewpoints = viewpoints  # dict of CameraExtrinsics (all frames)
         self.keyframes = keyframes  # list of CameraExtrinsics (window)
-        
+
         if cur_viewpoint is not None and unpack_buffers:
             # get rgb
             if cur_viewpoint.rgb is not None:
                 gt_rgb = cur_viewpoint.rgb
             else:
                 raise ValueError("RGB must be provided")
-            
+
             # get depth
             if cur_viewpoint.depth is not None:
                 gt_depth = cur_viewpoint.depth
             else:
                 raise ValueError("Depth must be provided")
-            
+
             # # get mask
             # if cur_viewpoint.mask is not None:
             #     gt_mask = cur_viewpoint.mask
@@ -83,7 +93,7 @@ class MainToViewerPacket:
                 gt_segments = cur_viewpoint.segmentation
             else:
                 gt_segments = torch.zeros_like(gt_rgb[0]).long()
-                
+
             self.gt_rgb = self.resize_img(gt_rgb, 212, bilinear=True)
             self.gt_depth = self.resize_img(gt_depth, 212, bilinear=True)
             self.gt_segments = self.resize_img(gt_segments, 212, bilinear=False)
@@ -113,26 +123,33 @@ class MainToViewerPacket:
 
         height = int(width * img.shape[1] / img.shape[2])
         # img is 3xHxW
-        
+
         converted = False
-        if img.dtype == torch.int or img.dtype == torch.int32 or img.dtype == torch.int64:
+        if (
+            img.dtype == torch.int
+            or img.dtype == torch.int32
+            or img.dtype == torch.int64
+        ):
             img = img.float()
             converted = True
-        
+
         if bilinear:
             img = torch.nn.functional.interpolate(
-                img.unsqueeze(0), size=(height, width), mode="bilinear", align_corners=False
+                img.unsqueeze(0),
+                size=(height, width),
+                mode="bilinear",
+                align_corners=False,
             )
         else:
             # do not interpolate
             img = torch.nn.functional.interpolate(
                 img.unsqueeze(0), size=(height, width), mode="nearest"
             )
-            
+
         if converted:
             # convert back
             img = img.int()
-        
+
         return img.squeeze(0)
 
     # def get_covariance(self, scaling_modifier=1):
